@@ -14,3 +14,6 @@ build/
 # Node (frontend/.gitignore has the rest)
 node_modules/
 dist/
+
+# Vercel CLI project link
+.vercel

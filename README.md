@@ -65,6 +65,5 @@ from `public/Mirrorly_Logo.png`. The 2-second launch splash lives in `index.html
 
 Schema changes: edit models → `uv run alembic revision --autogenerate -m "..."` → review → `uv run alembic upgrade head`.
 
-## Deploying (later)
-Auth is an httpOnly session cookie (`SameSite=Lax`), so serve the frontend and `/api` from the **same site**
-(e.g. one domain with a reverse proxy, or `app.example.com` + `api.example.com`). Set `CORS_ORIGINS` only if origins differ.
+## Deploying
+See **[DEPLOY.md](DEPLOY.md)** (Vercel: API and web app as two projects, `/api` proxied so the login cookie stays first-party).

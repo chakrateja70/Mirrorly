@@ -20,3 +20,6 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.vercel]
+entrypoint = "app.main:app"  # Vercel serves this FastAPI app (project Root Directory: backend)

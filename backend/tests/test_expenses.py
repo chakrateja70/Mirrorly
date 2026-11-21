@@ -60,7 +60,9 @@ def test_expense_tracker_flow():
     a = client_for("A@example.com")
 
     # auth: cookie session works, email normalized, duplicate rejected, login works, logout clears
-    assert a.get("/api/auth/me").json()["email"] == "a@example.com"
+    me = a.get("/api/auth/me")
+    assert me.json()["email"] == "a@example.com"
+    assert me.headers["cache-control"] == "no-store"  # personal data must never be cached by a CDN/proxy
     assert a.post("/api/auth/register", json={"email": "a@example.com", "password": "password123", "name": "x"}).status_code == 409
     anon = TestClient(app, base_url="https://testserver")
     assert anon.get("/api/categories").status_code == 401

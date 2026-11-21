@@ -8,6 +8,15 @@ from app.expenses.router import router as expenses_router
 
 app = FastAPI(title="Mirrorly API")
 
+
+@app.middleware("http")
+async def no_store(request, call_next):
+    """Every response is personal data: never let a CDN or proxy (e.g. Vercel's) cache it."""
+    response = await call_next(request)
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
 if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
