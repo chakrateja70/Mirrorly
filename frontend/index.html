@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#4f46e5" />
+    <meta name="description" content="Mirrorly: track, reflect, live better." />
+    <title>Mirrorly</title>
+    <script>
+      try {
+        // apply a saved Light/Dark choice before first paint (no flash); otherwise the OS decides
+        var t = localStorage.getItem('theme')
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t
+        // the launch splash plays once per session (opening the app / a new tab), not on every reload
+        if (sessionStorage.getItem('splash')) document.documentElement.classList.add('no-splash')
+        else sessionStorage.setItem('splash', '1')
+      } catch (e) {}
+    </script>
+    <style>
+      /* Inline so it paints before the app bundle loads. */
+      :root { color-scheme: light dark; }
+      :root[data-theme='light'] { color-scheme: light; }
+      :root[data-theme='dark'] { color-scheme: dark; }
+
+      /* Full logo has a light and a dark variant (the wordmark is relit for dark backgrounds). */
+      .logo-dark { display: none; }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme='light']) .logo-light { display: none; }
+        :root:not([data-theme='light']) .logo-dark { display: block; }
+      }
+      :root[data-theme='dark'] .logo-light { display: none; }
+      :root[data-theme='dark'] .logo-dark { display: block; }
+
+      /* Launch splash: logo rises in over a soft glow, holds, then fades out at 2s. */
+      #splash {
+        position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center;
+        background: light-dark(#f5f5f8, #0f0f14);
+        animation: splash-out 0.45s ease-in 1.55s forwards;
+      }
+      #splash::before {
+        content: ''; position: absolute; width: min(560px, 120vw); aspect-ratio: 1; border-radius: 50%;
+        background: radial-gradient(closest-side, rgb(124 58 237 / 0.3), rgb(37 99 235 / 0.14) 55%, transparent 72%);
+        animation: splash-glow 1.6s ease-out both;
+      }
+      #splash img { position: relative; width: min(300px, 66vw); height: auto; animation: splash-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+      .no-splash #splash { display: none; }
+      @keyframes splash-in { from { opacity: 0; transform: translateY(14px) scale(0.92); filter: blur(6px); } }
+      @keyframes splash-glow { from { opacity: 0; transform: scale(0.55); } }
+      @keyframes splash-out { to { opacity: 0; visibility: hidden; } }
+      @media (prefers-reduced-motion: reduce) {
+        #splash img, #splash::before { animation: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="splash" aria-hidden="true">
+      <img class="logo-light" src="/logo-light.webp" alt="" />
+      <img class="logo-dark" src="/logo-dark.webp" alt="" />
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

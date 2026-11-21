@@ -1,0 +1,16 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[oc]
+.venv
+.pytest_cache/
+build/
+*.egg-info
+
+# Node (frontend/.gitignore has the rest)
+node_modules/
+dist/
