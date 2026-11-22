@@ -376,6 +376,56 @@ def test_ious(monkeypatch):
     assert len(c.get("/api/ious").json()) == before
 
 
+def test_assistant_voice(monkeypatch):
+    from app.assistant.router import MAX_AUDIO
+    c = client_for("voice@example.com", unlock=False)
+    monkeypatch.setattr(settings, "groq_api_key", "test-key")
+    calls = []
+
+    def whisper(text, status=200):
+        def post(url, **kw):
+            calls.append((url, kw))
+            if status != 200:
+                return httpx.Response(status, json={"error": {"message": "Rate limit reached"}})
+            return httpx.Response(200, json={"text": text})
+        monkeypatch.setattr(llm.httpx, "post", post)
+
+    def send(data=b"\x1aE\xdf\xa3" + b"0" * 2000, kind="audio/webm;codecs=opus", name="voice.webm"):
+        return c.post("/api/assistant/transcribe", files={"audio": (name, data, kind)})
+
+    whisper(" I gave 500 to Rahul, he'll return it in 5 days. ")
+    r = send()
+    assert r.status_code == 200, r.text
+    assert r.json() == {"text": "I gave 500 to Rahul, he'll return it in 5 days."}
+    url, kw = calls[-1]
+    assert url.endswith("/audio/transcriptions") and kw["data"]["model"] == settings.groq_whisper_model
+    assert kw["files"]["file"][0] == "voice.webm" and kw["files"]["file"][2] == "audio/webm"
+    assert "INR" in kw["data"]["prompt"] and "Groceries" in kw["data"]["prompt"]  # spelling hint: currency + categories
+
+    # Whisper's inventions on silence count as nothing said; real words that merely contain them don't
+    for invented in ["The End", " Thank you.", "Thanks for watching!", "you"]:
+        whisper(invented)
+        assert send().status_code == 422, invented
+    whisper("Thank you Rahul for the 500, he paid back")
+    assert send().status_code == 200
+
+    # wrong file type, too big, rate limited, logged out
+    assert send(kind="text/plain", name="notes.txt").status_code == 415
+    assert send(data=b"0" * (MAX_AUDIO + 1)).status_code == 413
+    whisper([], status=429)
+    assert send().status_code == 503  # never 401: the app would log the user out
+    anon = TestClient(app, base_url="https://testserver")
+    assert anon.post("/api/assistant/transcribe", files={"audio": ("v.webm", b"x", "audio/webm")}).status_code == 401
+
+    # the transcript is then sent like a typed message, remembered as spoken
+    model_says(monkeypatch, "chat", "Hi!")
+    r = c.post("/api/assistant/chat", json={"message": "hello", "today": "2026-11-22", "voice": True})
+    assert r.status_code == 200, r.text
+    asked, reply = r.json()
+    assert asked["voice"] is True and reply["voice"] is False
+    assert c.get("/api/assistant/messages").json()[0]["voice"] is True
+
+
 def scripted_groq(*statuses, answer=None):
     """Fake Groq answering with these HTTP statuses in order (400 = the gpt-oss tool-call misfire)."""
     temperatures = []

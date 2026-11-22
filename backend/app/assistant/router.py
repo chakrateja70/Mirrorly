@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, func, select
 
@@ -36,6 +36,7 @@ REFUSALS = {
 class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
     today: date  # the client's local date, so "yesterday" resolves in the user's timezone
+    voice: bool = False  # typed by voice (transcribed); shown with a mic on the message
 
 
 class Logged(BaseModel):
@@ -78,6 +79,7 @@ class MessageOut(BaseModel):
     logged: list[LoggedOut] = []
     answer: Answer | None = None
     ious: list[IouOut] = []  # IOUs this reply recorded, repaid or listed (as they were then)
+    voice: bool = False  # the user's message was spoken
     age: int  # seconds since stored, by the server clock (drives the 1-minute undo window; immune to client clock skew)
 
 
@@ -92,7 +94,7 @@ def _alive(db, user: User, msgs: list[ChatMessage]) -> set[str]:
 def _out(m: ChatMessage, alive: set[str]) -> MessageOut:
     d = m.data or {}
     return MessageOut(
-        id=m.id, role=m.role, content=m.content, answer=d.get("answer"), ious=d.get("ious", []),
+        id=m.id, role=m.role, content=m.content, answer=d.get("answer"), ious=d.get("ious", []), voice=d.get("voice", False),
         logged=[LoggedOut(**x, removed=x["id"] not in alive) for x in d.get("logged", [])],
         age=max(0, int((datetime.now(UTC) - m.created_at).total_seconds())),
     )
@@ -173,6 +175,33 @@ def clear_messages(db: DB, user: CurrentUser):
     db.commit()
 
 
+MAX_AUDIO = 3 * 1024 * 1024  # ~3 minutes of compressed speech; the app stops recording at one minute
+
+
+class Transcript(BaseModel):
+    text: str
+
+
+@router.post("/transcribe", response_model=Transcript)
+def transcribe(audio: UploadFile, db: DB, user: CurrentUser):
+    """A voice message -> text. The app then sends that text as an ordinary chat message (voice=true), so
+    spoken requests go through exactly the same checks as typed ones."""
+    if not settings.groq_api_key:
+        raise HTTPException(503, "The assistant isn't set up yet: add GROQ_API_KEY to backend/.env and restart the backend.")
+    kind = (audio.content_type or "").split(";")[0].strip()
+    if not kind.startswith("audio/"):
+        raise HTTPException(415, "Send an audio recording.")
+    data = audio.file.read(MAX_AUDIO + 1)
+    if len(data) > MAX_AUDIO:
+        raise HTTPException(413, "That recording is too long. Keep voice messages under a minute.")
+    cats = db.scalars(select(Category.name).where(Category.user_id == user.id)).all()
+    hint = f"Spending and money in {user.currency}. Coffee 80, lent 500 to Rahul, paid by UPI, GPay, card, cash. Categories: {', '.join(cats)}."
+    text = llm.transcribe(data, audio.filename or "voice.webm", kind, hint)
+    if not text:
+        raise HTTPException(422, "I didn't catch that. Try again, a little closer to the mic.")
+    return Transcript(text=text[:1000])
+
+
 @router.post("/chat", response_model=list[MessageOut])
 def chat(body: ChatIn, db: DB, user: CurrentUser):
     """Send one message. Returns the stored question and the assistant's stored reply."""
@@ -248,7 +277,8 @@ def chat(body: ChatIn, db: DB, user: CurrentUser):
         else:
             override = "No open IOUs: nobody owes you anything, and you don't owe anyone."
 
-    asked = ChatMessage(user_id=user.id, role="user", content=body.message, data={"refused": refused} if refused else None)
+    asked_data = ({"refused": refused} if refused else {}) | ({"voice": True} if body.voice else {})
+    asked = ChatMessage(user_id=user.id, role="user", content=body.message, data=asked_data or None)
     db.add(asked)
     db.flush()  # the question gets the lower id
     text = REFUSALS[refused] if refused else override or result.reply.strip()[:1000] or "Done."

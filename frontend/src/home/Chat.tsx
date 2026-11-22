@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { ArrowUp, Bot, RotateCcw, TriangleAlert, Undo2 } from 'lucide-react'
+import { ArrowUp, Bot, Mic, RotateCcw, TriangleAlert, Undo2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, METHOD_COLOR, queryClient, today, type Answer, type Category, type ChatMessage, type Iou, type PaymentMethod } from '../api'
@@ -13,6 +13,7 @@ import CategoryAvatar from '../features/expenses/CategoryAvatar'
 import { dueText, isOpen, leftCents } from '../ious/ious'
 import PersonAvatar from '../ious/PersonAvatar'
 import { refreshIous } from '../ious/queries'
+import { canRecord, extFor, useVoiceRecorder, type Take } from './useVoiceRecorder'
 
 /** The assistant's face: a glossy gradient orb that slowly turns (still when reduced motion is on). */
 const Orb = ({ className }: { className?: string }) => (
@@ -138,15 +139,44 @@ export default function Chat() {
   const log = useRef<HTMLDivElement>(null)
 
   const send = useMutation({
-    mutationFn: (message: string) => api<ChatMessage[]>('/assistant/chat', { method: 'POST', body: { message, today: today() } }),
+    mutationFn: ({ message, voice = false }: { message: string; voice?: boolean }) =>
+      api<ChatMessage[]>('/assistant/chat', { method: 'POST', body: { message, voice, today: today() } }),
     onMutate: () => setFailed(null),
     onSuccess: (turn) => {
       queryClient.setQueryData<Item[]>(['chat'], (old = []) => [...old, ...stamp(turn)])
       if (turn.some((m) => m.logged.length)) refreshExpenseData()
       if (turn.some((m) => m.ious.length)) refreshIous()
     },
-    onError: (e, message) => setFailed({ text: message, error: e.message }),
+    onError: (e, { message }) => setFailed({ text: message, error: e.message }),
   })
+
+  // voice: record -> transcribe (Whisper) -> sent like a typed message, marked as spoken
+  const [micOk] = useState(canRecord)
+  const [voiceNote, setVoiceNote] = useState<string | null>(null) // why a take wasn't sent
+  const transcribe = useMutation({
+    mutationFn: (blob: Blob) => {
+      const form = new FormData()
+      form.append('audio', blob, `voice.${extFor(blob.type)}`)
+      return api<{ text: string }>('/assistant/transcribe', { method: 'POST', body: form })
+    },
+    onSuccess: ({ text: heard }) => send.mutate({ message: heard, voice: true }),
+  })
+  const sendTake = (take: Take) => {
+    if (take.seconds < 0.8) return setVoiceNote('That was too short: tap the mic, say what you spent, then tap send.')
+    if (!take.heardVoice) return setVoiceNote("I didn't hear anything. Check your mic and try again.")
+    transcribe.mutate(take.blob)
+  }
+  const voice = useVoiceRecorder(60, sendTake) // a minute at most, then it sends by itself
+  const startVoice = () => {
+    setVoiceNote(null)
+    transcribe.reset()
+    void voice.start()
+  }
+  const stopAndSend = async () => {
+    const take = await voice.stop()
+    if (take) sendTake(take)
+  }
+  const voiceProblem = voiceNote ?? voice.error ?? transcribe.error?.message
   const undo = useMutation({
     mutationFn: (id: string) => api(`/expenses/${id}`, { method: 'DELETE' }),
     onSettled: () => {
@@ -160,10 +190,11 @@ export default function Chat() {
   })
 
   const msgs = history.data ?? []
-  const ready = !!text.trim() && !send.isPending // something to send, and not already sending
+  const busy = send.isPending || transcribe.isPending
+  const ready = !!text.trim() && !busy // something to send, and not already sending
   useEffect(() => {
     log.current?.scrollTo({ top: log.current.scrollHeight })
-  }, [msgs.length, send.isPending, failed])
+  }, [msgs.length, send.isPending, transcribe.isPending, failed])
 
   // tick once a second only while some undo is still open
   const undoOpenUntil = Math.max(0, ...msgs.filter((m) => m.logged.some((e) => !e.removed)).map((m) => m.undoUntil))
@@ -178,9 +209,10 @@ export default function Chat() {
 
   const submit = (raw: string) => {
     const message = raw.trim()
-    if (!message || send.isPending) return
+    if (!message || busy) return
     setText('')
-    send.mutate(message)
+    setVoiceNote(null)
+    send.mutate({ message })
   }
 
   return (
@@ -211,7 +243,7 @@ export default function Chat() {
           </Loading>
         )}
         {history.error && <p className="text-sm text-destructive">{history.error.message}</p>}
-        {history.data && msgs.length === 0 && !send.isPending && !failed && (
+        {history.data && msgs.length === 0 && !busy && !failed && (
           <div className="chat-empty my-auto grid justify-items-center gap-3 text-center">
             <Orb className="mb-1 size-16" />
             <div>
@@ -230,7 +262,10 @@ export default function Chat() {
 
         {msgs.map((m) => (
           <div key={m.id} className={cn('msg', bubble(m.role), (m.logged.length > 0 || m.answer) && 'max-w-[min(100%,560px)]')}>
-            <p>{m.content}</p>
+            <p>
+              {m.voice && <><Mic className="mr-1.5 inline size-3.5 align-[-2px] opacity-75" aria-hidden /><span className="sr-only">Voice message: </span></>}
+              {m.content}
+            </p>
             {m.logged.length > 0 && (
               <ul className="mt-2.5 grid gap-1.5">
                 {m.logged.map((e) => {
@@ -266,9 +301,16 @@ export default function Chat() {
           </div>
         ))}
 
+        {transcribe.isPending && ( // my voice message, being turned into text
+          <div className={cn(bubble('user'), 'typing flex items-center gap-1.5 py-3')} role="status">
+            <Mic className="mr-1 size-4" aria-hidden /><span className="sr-only">Listening to your voice message…</span><i /><i /><i />
+          </div>
+        )}
         {send.isPending && (
           <>
-            <div className={bubble('user')}><p>{send.variables}</p></div>
+            <div className={bubble('user')}>
+              <p>{send.variables.voice && <Mic className="mr-1.5 inline size-3.5 align-[-2px] opacity-75" aria-hidden />}{send.variables.message}</p>
+            </div>
             <div className={cn(bubble('assistant'), 'typing flex gap-1.5 py-4 text-muted-foreground')} role="status"><span className="sr-only">Thinking…</span><i /><i /><i /></div>
           </>
         )}
@@ -284,24 +326,61 @@ export default function Chat() {
         {undo.error && <p className="text-sm text-destructive">Couldn't undo: {undo.error.message}</p>}
       </div>
 
-      {/* one composer pill: the send button sits inside the field and lights up once there's something to send */}
+      {voiceProblem && <p className="px-5 pt-2 text-xs text-destructive" role="alert">{voiceProblem}</p>}
+      {/* one composer pill: the button inside it is the mic while the field is empty, send once there's text;
+          while recording, the pill becomes the recorder (cancel, timer, live waveform, send) */}
       <form className="p-3" onSubmit={(e) => { e.preventDefault(); submit(text) }}>
-        <div className="flex items-center gap-2 rounded-full bg-muted p-1.5 pl-5 transition-[background-color,box-shadow] focus-within:bg-card focus-within:shadow-card focus-within:ring-[3px] focus-within:ring-ring/20">
-          <input
-            value={text} onChange={(e) => setText(e.target.value)} maxLength={1000} aria-label="Message"
-            placeholder="e.g. Bought a bag for 2500"
-            className="h-9 min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-sm"
-          />
-          <Button
-            size="icon" aria-label="Send" disabled={!ready}
-            className={cn(
-              'size-9 flex-none rounded-full transition-all disabled:opacity-100',
-              ready ? 'bg-linear-135 from-indigo-500 to-fuchsia-500 text-white shadow-md shadow-indigo-500/30 hover:brightness-110' : 'bg-foreground/10 text-muted-foreground',
-            )}
+        {voice.recording ? (
+          <div
+            className="flex items-center gap-2 rounded-full bg-card p-1.5 shadow-card ring-[3px] ring-rose-500/15"
+            role="group" aria-label="Recording a voice message" onKeyDown={(e) => e.key === 'Escape' && voice.cancel()}
           >
-            <ArrowUp className="size-[1.125rem]" strokeWidth={2.5} aria-hidden />
-          </Button>
-        </div>
+            <Button type="button" variant="ghost" size="icon" className="size-9 flex-none rounded-full text-muted-foreground" aria-label="Cancel recording" onClick={voice.cancel}>
+              <X className="size-[1.125rem]" aria-hidden />
+            </Button>
+            <span className="flex flex-none items-center gap-2 text-sm font-medium tabular-nums" role="timer">
+              <span className="size-2.5 animate-pulse rounded-full bg-rose-500" aria-hidden />
+              {Math.floor(voice.seconds / 60)}:{String(voice.seconds % 60).padStart(2, '0')}
+            </span>
+            <span className="flex h-8 min-w-0 flex-1 items-center justify-center gap-[3px] overflow-hidden" aria-hidden>
+              {voice.levels.map((l, i) => (
+                <span key={i} className="w-[3px] flex-none rounded-full bg-linear-to-t from-indigo-500 to-fuchsia-500 transition-[height] duration-75" style={{ height: `${Math.max(12, l * 100)}%` }} />
+              ))}
+            </span>
+            <Button
+              type="button" size="icon" aria-label="Send voice message" autoFocus onClick={stopAndSend}
+              className="size-9 flex-none rounded-full bg-linear-135 from-indigo-500 to-fuchsia-500 text-white shadow-md shadow-indigo-500/30 hover:brightness-110"
+            >
+              <ArrowUp className="size-[1.125rem]" strokeWidth={2.5} aria-hidden />
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 rounded-full bg-muted p-1.5 pl-5 transition-[background-color,box-shadow] focus-within:bg-card focus-within:shadow-card focus-within:ring-[3px] focus-within:ring-ring/20">
+            <input
+              value={text} onChange={(e) => { setText(e.target.value); setVoiceNote(null) }} maxLength={1000} aria-label="Message"
+              placeholder={micOk ? 'Type, or tap the mic and speak' : 'e.g. Bought a bag for 2500'}
+              className="h-9 min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground md:text-sm"
+            />
+            {micOk && !text.trim() ? (
+              <Button
+                type="button" size="icon" aria-label="Speak your message" title="Speak" disabled={busy} onClick={startVoice}
+                className="size-9 flex-none rounded-full bg-foreground/10 text-foreground transition-all hover:bg-linear-135 hover:from-indigo-500 hover:to-fuchsia-500 hover:text-white"
+              >
+                <Mic className="size-[1.125rem]" aria-hidden />
+              </Button>
+            ) : (
+              <Button
+                size="icon" aria-label="Send" disabled={!ready}
+                className={cn(
+                  'size-9 flex-none rounded-full transition-all disabled:opacity-100',
+                  ready ? 'bg-linear-135 from-indigo-500 to-fuchsia-500 text-white shadow-md shadow-indigo-500/30 hover:brightness-110' : 'bg-foreground/10 text-muted-foreground',
+                )}
+              >
+                <ArrowUp className="size-[1.125rem]" strokeWidth={2.5} aria-hidden />
+              </Button>
+            )}
+          </div>
+        )}
       </form>
     </Card>
   )

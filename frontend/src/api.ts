@@ -80,6 +80,7 @@ export type ChatMessage = {
   logged: LoggedExpense[]
   answer: Answer | null
   ious: Iou[] // recorded, repaid or listed by this reply, as they were then
+  voice: boolean // the user's message was spoken
   age: number // seconds since stored, by the server clock
 }
 /** GET /expenses/page: count/total cover every match; days = full-day totals for the days on this page. */
@@ -99,14 +100,16 @@ export class ApiError extends Error {
   }
 }
 
+/** JSON in and out; a FormData body (file upload) is sent as multipart, the browser sets its own Content-Type. */
 export async function api<T>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   let res: Response
+  const form = opts.body instanceof FormData
   try {
     res = await fetch(`/api${path}`, {
       method: opts.method ?? 'GET',
       credentials: 'include',
-      headers: opts.body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+      headers: opts.body === undefined || form ? undefined : { 'Content-Type': 'application/json' },
+      body: opts.body === undefined ? undefined : form ? (opts.body as FormData) : JSON.stringify(opts.body),
     })
   } catch {
     throw new ApiError(0, navigator.onLine ? 'Cannot reach the server' : "You're offline")

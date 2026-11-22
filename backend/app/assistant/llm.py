@@ -226,7 +226,15 @@ def ask_llm(messages: list[dict], categories: list[str], currency: str, today: d
             break
     else:
         raise HTTPException(502, "The assistant tripped over that one. Please send it again.")
-    if r.status_code == 429:  # free tier: ~8k tokens/min, roughly 5 messages a minute
+    _raise_for_status(r)
+    try:
+        return Extraction.model_validate_json(r.json()["choices"][0]["message"]["content"])
+    except (ValueError, KeyError, IndexError, TypeError):  # ValidationError is a ValueError
+        raise HTTPException(502, "The assistant's answer couldn't be read. Try rephrasing.")
+
+
+def _raise_for_status(r: httpx.Response) -> None:
+    if r.status_code == 429:  # free tier limits: ~8k tokens/min for chat, audio seconds per hour for voice
         raise HTTPException(503, "The assistant is busy (Groq rate limit). Try again in a few seconds.")
     if r.status_code != 200:
         try:
@@ -235,7 +243,32 @@ def ask_llm(messages: list[dict], categories: list[str], currency: str, today: d
             msg = r.text[:200]
         # never 401 here: the frontend treats 401 as "logged out"
         raise HTTPException(502, f"Groq error ({r.status_code}): {msg}")
+
+
+GROQ_AUDIO_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+# What Whisper invents on silence or noise. A transcript that is only one of these means nothing was said.
+# (Groq's Whisper reports no_speech_prob = 0 even for pure silence, so there is no score to filter on;
+# the app also checks the mic level before uploading.)
+_SILENCE = {"", "you", "so", "ok", "okay", "hmm", "bye", "the end", "thanks", "thank you", "thank you very much",
+            "thanks for watching", "thank you for watching", "subtitles by the amaraorg community"}
+
+
+def transcribe(audio: bytes, filename: str, content_type: str, hint: str) -> str:
+    """A voice message -> text with Groq Whisper (any language; the chat model understands Hindi, Hinglish, ...).
+    `hint` biases spelling (UPI, GPay, the user's categories). Returns "" when nothing was said."""
     try:
-        return Extraction.model_validate_json(r.json()["choices"][0]["message"]["content"])
-    except (ValueError, KeyError, IndexError, TypeError):  # ValidationError is a ValueError
-        raise HTTPException(502, "The assistant's answer couldn't be read. Try rephrasing.")
+        r = httpx.post(
+            GROQ_AUDIO_URL,
+            headers={"Authorization": f"Bearer {settings.groq_api_key}"},
+            data={"model": settings.groq_whisper_model, "response_format": "json", "temperature": "0", "prompt": hint},
+            files={"file": (filename, audio, content_type)},
+            timeout=30,
+        )
+    except httpx.HTTPError:
+        raise HTTPException(502, "Couldn't reach Groq. Check your internet connection.")
+    _raise_for_status(r)
+    try:
+        text = r.json()["text"].strip()
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise HTTPException(502, "The voice message couldn't be read. Try again.")
+    return "" if re.sub(r"[^\w\s]", "", text.lower()).strip() in _SILENCE else text
