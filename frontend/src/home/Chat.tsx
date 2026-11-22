@@ -236,7 +236,8 @@ export default function Chat() {
         )}
       </header>
 
-      <div className="chat-log flex flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 p-4" ref={log} aria-live="polite">
+      {/* relative: keeps the absolutely positioned sr-only labels inside the scroller; without it they stretch the page */}
+      <div className="chat-log relative flex flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 p-4" ref={log} aria-live="polite">
         {history.isPending && (
           <Loading label="Loading conversation">
             {['48%', '66%', '38%', '58%'].map((w, i) => <span key={w} className={`skel bubble${i % 2 ? '' : ' mine'}`} style={{ width: w }} />)}
