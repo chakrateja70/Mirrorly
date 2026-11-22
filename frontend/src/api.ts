@@ -1,8 +1,36 @@
-import { QueryClient } from '@tanstack/react-query'
+import { dehydrate, hydrate, QueryClient } from '@tanstack/react-query'
+
+declare const __BUILD_ID__: string // vite.config.ts
 
 export const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+  // gcTime 1 day: results of pages not on screen stay cached (and saved below), so revisiting them is instant too
+  defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, gcTime: 86_400_000 } },
 })
+
+// Stale-while-revalidate across visits: the last results are saved in localStorage and painted instantly on the
+// next open, while every query still refetches in the background (staleTime 0). The API is ~0.6 s per call from
+// India (more when cold), so this is what makes opening the app feel instant. Saved per build: a deploy that
+// changes a response shape never renders old-shaped data.
+const CACHE_KEY = 'mirrorly-cache'
+try {
+  const saved = JSON.parse(localStorage.getItem(CACHE_KEY) ?? 'null')
+  if (saved?.build === __BUILD_ID__) hydrate(queryClient, saved.state)
+  queryClient.invalidateQueries({ queryKey: ['me'], refetchType: 'none' }) // me never goes stale: recheck the session once
+} catch { /* storage blocked or corrupt: start empty */ }
+queryClient.getQueryCache().subscribe((e) => {
+  if (e.type !== 'removed' && !(e.type === 'updated' && e.action.type === 'success')) return
+  // never save me = null: a restored "logged out" would redirect to /login before the session is rechecked
+  const shouldDehydrateQuery = (q: { state: { status: string; data: unknown } }) => q.state.status === 'success' && q.state.data !== null
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ build: __BUILD_ID__, state: dehydrate(queryClient, { shouldDehydrateQuery }) }))
+  } catch { /* full or blocked: just not saved */ }
+})
+
+/** Logged out or session expired: drop the previous user's data (memory and saved copy), then me = null. */
+export function forgetUser() {
+  queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' })
+  queryClient.setQueryData(['me'], null)
+}
 
 // ---- types (mirror backend schemas; money is a decimal string) ----
 export type User = { id: string; email: string; name: string; currency: string }
@@ -42,6 +70,8 @@ export type ChatMessage = {
   answer: Answer | null
   age: number // seconds since stored, by the server clock
 }
+/** GET /expenses/page: count/total cover every match; days = full-day totals for the days on this page. */
+export type ExpensePage = { items: Expense[]; count: number; total: string; days: { date: string; spent: string }[] }
 export type Summary = {
   month: string
   total: string
@@ -69,9 +99,8 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
   } catch {
     throw new ApiError(0, navigator.onLine ? 'Cannot reach the server' : "You're offline")
   }
-  if (res.status === 401 && !path.startsWith('/auth/')) {
-    queryClient.setQueryData(['me'], null) // session expired: auth guard sends user to /login
-  }
+  // session expired (a 401 from /auth/login or /register is just a wrong password): auth guard sends user to /login
+  if (res.status === 401 && (path === '/auth/me' || !path.startsWith('/auth/'))) forgetUser()
   if (!res.ok) {
     const detail = (await res.json().catch(() => null))?.detail
     const msg = typeof detail === 'string'

@@ -1,5 +1,6 @@
 import { Monitor, Moon, Sun } from 'lucide-react'
 import { useState } from 'react'
+import { cn } from '@/lib/utils'
 
 type Theme = 'light' | 'dark' | 'system'
 const OPTIONS = [
@@ -17,27 +18,33 @@ function saved(): Theme {
   }
 }
 
-/** Light / Dark / System. Pins `data-theme` on <html> (index.html re-applies it before first paint). */
-export default function ThemeToggle() {
+/** Light / Dark / System. Toggles .dark on <html> (index.html applies the saved choice before first paint
+ *  and keeps "System" in step with the OS). */
+export default function ThemeToggle({ compact = false }: { compact?: boolean }) {
   const [theme, setTheme] = useState<Theme>(saved)
 
   const choose = (t: Theme) => {
     setTheme(t)
-    if (t === 'system') delete document.documentElement.dataset.theme
-    else document.documentElement.dataset.theme = t
     try {
       if (t === 'system') localStorage.removeItem('theme')
       else localStorage.setItem('theme', t)
     } catch {
       /* not persisted; still applies for this visit */
     }
+    document.documentElement.classList.toggle('dark', t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches))
   }
 
   return (
-    <div className="seg" role="group" aria-label="Theme">
+    <div className="flex gap-0.5 rounded-xl bg-muted p-1" role="group" aria-label="Theme">
       {OPTIONS.map(({ value, label, Icon }) => (
-        <button key={value} type="button" title={label} aria-label={label} aria-pressed={theme === value} onClick={() => choose(value)}>
-          <Icon size={16} aria-hidden /> <span>{label}</span>
+        <button
+          key={value} type="button" title={label} aria-label={label} aria-pressed={theme === value} onClick={() => choose(value)}
+          className={cn(
+            'flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground',
+            'aria-pressed:bg-card aria-pressed:text-foreground aria-pressed:shadow-sm',
+          )}
+        >
+          <Icon className="size-4" aria-hidden /> {!compact && <span>{label}</span>}
         </button>
       ))}
     </div>

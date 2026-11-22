@@ -21,6 +21,15 @@ router = APIRouter(prefix="/assistant", tags=["assistant"])
 HISTORY = 8  # past messages the model sees
 SHOWN = 100  # ponytail: newest 100 messages only; add a `before` cursor if older history must scroll in
 
+# The reply when the assistant won't help: fixed text, so nothing the model writes for these ever reaches the user
+# (it can't answer "which AI are you?" or claim "done, everything deleted").
+REFUSALS = {
+    "off_topic": "I'm Mirrorly's assistant, so I can only help with your expenses: tell me what you spent "
+                 "(\"Coffee 80\") or ask about your spending (\"How much on food this month?\").",
+    "unsafe": "I can't do that. I can only add expenses and answer questions about them; I never delete or change "
+              "your data in bulk. To remove an expense, tap it in Expenses > Transactions.",
+}
+
 
 class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
@@ -164,15 +173,23 @@ def chat(body: ChatIn, db: DB, user: CurrentUser):
     if not cats:
         raise HTTPException(409, "Create a category first")
 
-    past = db.scalars(
-        select(ChatMessage).where(ChatMessage.user_id == user.id).order_by(ChatMessage.id.desc()).limit(HISTORY)
-    ).all()[::-1]
-    alive = _alive(db, user, past)
-    history = [_for_model(m, alive) for m in past] + [{"role": "user", "content": body.message}]
-    result = llm.ask_llm(history, [c.name for c in cats.values()], user.currency, body.today)
+    refused, result = None, None
+    if llm.looks_like_command(body.message):
+        refused = "unsafe"  # SQL / shell shaped: never sent to the model
+    else:
+        past = db.scalars(
+            select(ChatMessage).where(ChatMessage.user_id == user.id).order_by(ChatMessage.id.desc()).limit(HISTORY)
+        ).all()[::-1]
+        past = [m for m in past if not (m.data or {}).get("refused")]  # refused turns (and any injection in them) stay out of context
+        alive = _alive(db, user, past)
+        history = [_for_model(m, alive) for m in past] + [{"role": "user", "content": body.message}]
+        result = llm.ask_llm(history, [c.name for c in cats.values()], user.currency, body.today)
+        refused = result.intent if result.intent in REFUSALS else None
 
     data, created = None, []
-    if result.intent == "log" and result.expenses:
+    if refused:
+        data = {"refused": refused}  # whatever the model put in expenses/query is ignored
+    elif result.intent == "log" and result.expenses:
         try:
             items = [
                 ExpenseIn(
@@ -193,10 +210,11 @@ def chat(body: ChatIn, db: DB, user: CurrentUser):
     elif result.intent == "query" and result.query:
         data = {"answer": run_query(db, user, result.query, cats).model_dump(mode="json")}
 
-    asked = ChatMessage(user_id=user.id, role="user", content=body.message)
+    asked = ChatMessage(user_id=user.id, role="user", content=body.message, data={"refused": refused} if refused else None)
     db.add(asked)
     db.flush()  # the question gets the lower id
-    reply = ChatMessage(user_id=user.id, role="assistant", content=result.reply.strip()[:1000] or "Done.", data=data)
+    text = REFUSALS[refused] if refused else result.reply.strip()[:1000] or "Done."
+    reply = ChatMessage(user_id=user.id, role="assistant", content=text, data=data)
     db.add(reply)
     db.commit()
     return [_out(asked, set()), _out(reply, {str(e.id) for e in created})]

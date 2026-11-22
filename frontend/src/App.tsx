@@ -6,6 +6,7 @@ import ExpensesLayout from './features/expenses/ExpensesLayout'
 import TransactionsPage from './features/expenses/TransactionsPage'
 import HomePage from './home/HomePage'
 import Shell from './Shell'
+import { ChartsSkeleton } from './Skeleton'
 
 const AnalyticsPage = lazy(() => import('./features/expenses/AnalyticsPage')) // keeps recharts out of first load
 
@@ -19,7 +20,7 @@ export default function App() {
           <Route index element={<HomePage />} />
           <Route path="expenses" element={<ExpensesLayout />}>
             <Route index element={<TransactionsPage />} />
-            <Route path="analytics" element={<Suspense fallback={<p className="muted">Loading charts…</p>}><AnalyticsPage /></Suspense>} />
+            <Route path="analytics" element={<Suspense fallback={<ChartsSkeleton />}><AnalyticsPage /></Suspense>} />
             <Route path="categories" element={<CategoriesPage />} />
           </Route>
         </Route>

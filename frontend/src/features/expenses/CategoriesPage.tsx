@@ -1,8 +1,15 @@
 import { useMutation } from '@tanstack/react-query'
-import { LockKeyhole, Trash2 } from 'lucide-react'
+import { Check, LockKeyhole, Plus, Trash2 } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
+import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { api, ApiError, type Category } from '../../api'
+import { SkeletonList } from '../../Skeleton'
+import { CategoryIcon } from './CategoryAvatar'
 import { refreshExpenseData, useCategories } from './queries'
+
+const DEFAULT_COLOR = '#6b7280'
 
 /** Form fields -> API body. Empty budget clears it (null). */
 const toBody = (form: HTMLFormElement) => {
@@ -14,6 +21,8 @@ const toBody = (form: HTMLFormElement) => {
 const isLocked = (e: Error) => e instanceof ApiError && e.status === 403
 
 function CategoryRow({ cat, onLocked }: { cat?: Category; onLocked: () => void }) {
+  const [color, setColor] = useState(cat?.color ?? DEFAULT_COLOR)
+  const [name, setName] = useState(cat?.name ?? '') // live, so the icon follows what's typed
   const save = useMutation({
     mutationFn: (body: ReturnType<typeof toBody>) =>
       cat ? api(`/categories/${cat.id}`, { method: 'PATCH', body }) : api('/categories', { method: 'POST', body }),
@@ -29,31 +38,48 @@ function CategoryRow({ cat, onLocked }: { cat?: Category; onLocked: () => void }
   const onSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const form = e.currentTarget
-    save.mutate(toBody(form), { onSuccess: () => { if (!cat) form.reset() } })
+    save.mutate(toBody(form), {
+      onSuccess: () => {
+        if (cat) return
+        form.reset()
+        setName('')
+        setColor(DEFAULT_COLOR)
+      },
+    })
   }
   const error = save.error ?? remove.error
 
   return (
-    <li>
-      <form className="cat-row" onSubmit={onSubmit}>
-        <input name="color" type="color" defaultValue={cat?.color ?? '#6b7280'} aria-label="Color" />
-        <input name="name" required maxLength={50} defaultValue={cat?.name} placeholder="New category" aria-label="Name" />
-        <input
-          name="monthly_budget" type="number" inputMode="decimal" step="0.01" min="0.01"
+    <li className="grid gap-1.5 px-4 py-3">
+      <form className="flex flex-wrap items-center gap-2 sm:flex-nowrap" onSubmit={onSubmit}>
+        {/* the category's icon on its color; tapping it opens the native color picker */}
+        <label className="relative grid size-10 flex-none cursor-pointer place-items-center rounded-full text-white shadow-sm" style={{ background: color }} title="Change color">
+          <CategoryIcon name={name} className="size-5 drop-shadow-[0_1px_1px_rgb(0_0_0/0.3)]" aria-hidden />
+          <input name="color" type="color" value={color} onChange={(e) => setColor(e.target.value)} aria-label="Color" className="absolute inset-0 size-full cursor-pointer opacity-0" />
+        </label>
+        <Input
+          name="name" required maxLength={50} defaultValue={cat?.name} placeholder="New category" aria-label="Name"
+          onChange={(e) => setName(e.target.value)} className="min-w-0 flex-[1_1_calc(100%-3rem)] sm:flex-[2]"
+        />
+        <Input
+          name="monthly_budget" type="number" inputMode="decimal" step="0.01" min="0.01" className="min-w-0 flex-1 sm:flex-[1.3]"
           defaultValue={cat?.monthly_budget ?? ''} placeholder="Monthly budget" aria-label="Monthly budget"
         />
-        <button className={cat ? '' : 'primary'} disabled={save.isPending}>{cat ? 'Save' : 'Add'}</button>
+        <Button variant={cat ? 'secondary' : 'default'} disabled={save.isPending}>
+          {cat ? 'Save' : <><Plus aria-hidden /> Add</>}
+        </Button>
         {cat && (
-          <button
-            type="button" className="danger ghost icon-btn" aria-label={`Delete ${cat.name}`} title="Delete" disabled={remove.isPending}
+          <Button
+            type="button" variant="ghost" size="icon" className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            aria-label={`Delete ${cat.name}`} title="Delete" disabled={remove.isPending}
             onClick={() => confirm(`Delete "${cat.name}"?`) && remove.mutate()}
           >
-            <Trash2 size={18} aria-hidden />
-          </button>
+            <Trash2 aria-hidden />
+          </Button>
         )}
       </form>
-      {error && <p className="error" role="alert">{error.message}</p>}
-      {save.isSuccess && cat && <small className="muted">Saved</small>}
+      {error && <p className="text-sm text-destructive" role="alert">{error.message}</p>}
+      {save.isSuccess && cat && <small className="flex items-center gap-1 text-xs text-good"><Check className="size-3.5" aria-hidden /> Saved</small>}
     </li>
   )
 }
@@ -66,17 +92,19 @@ function PinGate({ onUnlock }: { onUnlock: () => void }) {
     onError: () => setPin(''),
   })
   return (
-    <form className="card pin-gate" onSubmit={(e) => { e.preventDefault(); unlock.mutate() }}>
-      <span className="pin-icon"><LockKeyhole size={22} aria-hidden /></span>
-      <h2>Enter your PIN</h2>
-      <p className="muted">Categories and budgets are protected. Enter the PIN to manage them.</p>
-      <input
-        className="pin-input" type="password" inputMode="numeric" autoComplete="off" maxLength={32} required autoFocus
-        aria-label="PIN" value={pin} onChange={(e) => setPin(e.target.value)}
-      />
-      {unlock.error && <p className="error" role="alert">{unlock.error.message}</p>}
-      <button className="primary" disabled={unlock.isPending || !pin}>{unlock.isPending ? 'Checking…' : 'Unlock'}</button>
-    </form>
+    <Card className="mx-auto mt-6 max-w-sm items-center gap-3 px-6 py-8 text-center">
+      <form className="grid w-full justify-items-center gap-3" onSubmit={(e) => { e.preventDefault(); unlock.mutate() }}>
+        <span className="grid size-12 place-items-center rounded-2xl bg-accent text-accent-foreground"><LockKeyhole aria-hidden /></span>
+        <h2 className="text-lg font-semibold tracking-tight">Enter your PIN</h2>
+        <p className="text-sm text-muted-foreground">Categories and budgets are protected. Enter the PIN to manage them.</p>
+        <Input
+          className="h-12 max-w-56 pl-5 text-center text-2xl tracking-[0.5em]" type="password" inputMode="numeric" autoComplete="off" maxLength={32} required autoFocus
+          aria-label="PIN" value={pin} onChange={(e) => setPin(e.target.value)}
+        />
+        {unlock.error && <p className="text-sm text-destructive" role="alert">{unlock.error.message}</p>}
+        <Button className="w-full max-w-56" disabled={unlock.isPending || !pin}>{unlock.isPending ? 'Checking…' : 'Unlock'}</Button>
+      </form>
+    </Card>
   )
 }
 
@@ -87,14 +115,19 @@ export default function CategoriesPage() {
 
   const lock = () => setUnlocked(false)
   return (
-    <section>
-      <h2>Categories</h2>
-      <p className="muted">Set an optional monthly budget for any category. Leave empty for no limit.</p>
-      {categories.error && <p className="error">{categories.error.message}</p>}
-      <ul className="list cats">
-        <CategoryRow onLocked={lock} />
-        {categories.data?.map((c) => <CategoryRow key={c.id} cat={c} onLocked={lock} />)}
-      </ul>
+    <section className="grid gap-4">
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">Categories</h2>
+        <p className="text-sm text-muted-foreground">Set an optional monthly budget for any category. Leave empty for no limit.</p>
+      </div>
+      {categories.error && <p className="text-destructive">{categories.error.message}</p>}
+      {categories.isPending && <SkeletonList label="Loading categories" rows={8} />}
+      <Card className="gap-0 overflow-hidden py-1">
+        <ul className="divide-y divide-border/60">
+          <CategoryRow onLocked={lock} />
+          {categories.data?.map((c) => <CategoryRow key={c.id} cat={c} onLocked={lock} />)}
+        </ul>
+      </Card>
     </section>
   )
 }

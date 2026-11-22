@@ -2,11 +2,12 @@ import hmac
 import math
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
-from sqlalchemy import select
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Response
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.auth.security import DB, CurrentUser
@@ -123,12 +124,48 @@ def delete_category(id: uuid.UUID, db: DB, user: CurrentUser):
 
 @router.get("/expenses", response_model=list[s.ExpenseOut])
 def list_expenses(start: date, end: date, db: DB, user: CurrentUser):
-    """All expenses in [start, end], newest first. Category/method/search filters run client-side."""
+    """All expenses in [start, end], newest first (Analytics). Category/method/amount filters run client-side."""
     if start > end:
         raise HTTPException(422, "start must be on or before end")
     # ponytail: unpaginated range fetch; fine for personal volumes, paginate if ranges reach ~10k rows
     q = select(Expense).where(Expense.user_id == user.id, Expense.spent_on.between(start, end))
     return db.scalars(q.order_by(Expense.spent_on.desc(), Expense.created_at.desc())).all()
+
+
+@router.get("/expenses/page", response_model=s.ExpensePage)
+def page_expenses(
+    start: date, end: date, db: DB, user: CurrentUser,
+    category: Annotated[list[uuid.UUID], Query()] = [],
+    method: Annotated[list[s.PaymentMethod], Query()] = [],
+    min_amount: Decimal | None = None,
+    max_amount: Decimal | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 10,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    """One page of the Transactions list, newest first, with the same filters Analytics applies client-side.
+    count/total cover every match; days has full-day totals for the days on this page (a day can span pages)."""
+    if start > end:
+        raise HTTPException(422, "start must be on or before end")
+    where = [Expense.user_id == user.id, Expense.spent_on.between(start, end)]
+    if category:
+        where.append(Expense.category_id.in_(category))
+    if method:
+        where.append(Expense.payment_method.in_(method))
+    if min_amount is not None:
+        where.append(Expense.amount >= min_amount)
+    if max_amount is not None:
+        where.append(Expense.amount <= max_amount)
+
+    count, total = db.execute(select(func.count(), func.coalesce(func.sum(Expense.amount), 0)).where(*where)).one()
+    # id breaks ties: expenses logged in one chat turn share created_at, and offset paging needs a total order
+    order = (Expense.spent_on.desc(), Expense.created_at.desc(), Expense.id)
+    items = db.scalars(select(Expense).where(*where).order_by(*order).limit(limit).offset(offset)).all()
+    days = db.execute(
+        select(Expense.spent_on, func.sum(Expense.amount))
+        .where(*where, Expense.spent_on.in_({e.spent_on for e in items}))
+        .group_by(Expense.spent_on)
+    ).all() if items else []
+    return s.ExpensePage(items=items, count=count, total=total, days=[s.DaySpend(date=d, spent=v) for d, v in days])
 
 
 @router.get("/expenses/summary", response_model=s.Summary)

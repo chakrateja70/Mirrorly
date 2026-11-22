@@ -75,6 +75,13 @@ class DaySpend(BaseModel):
     spent: Decimal
 
 
+class ExpensePage(BaseModel):
+    items: list[ExpenseOut]
+    count: int  # every match, not just this page
+    total: Decimal  # sum over every match
+    days: list[DaySpend]  # full-day totals for the days on this page
+
+
 class Summary(BaseModel):
     month: str
     total: Decimal
