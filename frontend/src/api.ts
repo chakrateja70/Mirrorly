@@ -62,12 +62,24 @@ export type Answer = {
   largest: Expense | null
   budget: string | null
 }
+/** Money lent to (direction "lent": they owe you) or borrowed from (you owe them) a person. Not spending. */
+export type Iou = {
+  id: string
+  person: string
+  direction: 'lent' | 'borrowed'
+  amount: string
+  repaid: string // paid back so far; equal to amount = settled
+  given_on: string
+  due_on: string | null
+  note: string
+}
 export type ChatMessage = {
   id: number
   role: 'user' | 'assistant'
   content: string
   logged: LoggedExpense[]
   answer: Answer | null
+  ious: Iou[] // recorded, repaid or listed by this reply, as they were then
   age: number // seconds since stored, by the server clock
 }
 /** GET /expenses/page: count/total cover every match; days = full-day totals for the days on this page. */

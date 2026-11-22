@@ -15,6 +15,8 @@ from app.auth.security import DB, CurrentUser
 from app.config import settings
 from app.expenses.models import Category, Expense
 from app.expenses.schemas import ExpenseIn
+from app.ious.models import Iou
+from app.ious.router import IouIn, IouOut, open_ious, repay
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
@@ -75,6 +77,7 @@ class MessageOut(BaseModel):
     content: str
     logged: list[LoggedOut] = []
     answer: Answer | None = None
+    ious: list[IouOut] = []  # IOUs this reply recorded, repaid or listed (as they were then)
     age: int  # seconds since stored, by the server clock (drives the 1-minute undo window; immune to client clock skew)
 
 
@@ -89,7 +92,7 @@ def _alive(db, user: User, msgs: list[ChatMessage]) -> set[str]:
 def _out(m: ChatMessage, alive: set[str]) -> MessageOut:
     d = m.data or {}
     return MessageOut(
-        id=m.id, role=m.role, content=m.content, answer=d.get("answer"),
+        id=m.id, role=m.role, content=m.content, answer=d.get("answer"), ious=d.get("ious", []),
         logged=[LoggedOut(**x, removed=x["id"] not in alive) for x in d.get("logged", [])],
         age=max(0, int((datetime.now(UTC) - m.created_at).total_seconds())),
     )
@@ -103,7 +106,13 @@ def _for_model(m: ChatMessage, alive: set[str]) -> dict:
         text += "\n(Logged: " + "; ".join(f"{x['note'] or 'item'} {x['amount']} on {x['spent_on']}" for x in kept) + ")"
     if a := d.get("answer"):
         text += f"\n(Answer shown: {a['label']}: total {a['total']}, {a['count']} expenses)"
+    if ious := d.get("ious"):  # so "he returned it" knows who "he" is
+        text += "\n(IOUs: " + "; ".join(f"{x['direction']} {x['person']} {x['amount']}, repaid {x['repaid']}" for x in ious) + ")"
     return {"role": m.role, "content": text}
+
+
+def _snapshots(rows: list[Iou]) -> list[dict]:
+    return [IouOut.model_validate(r, from_attributes=True).model_dump(mode="json") for r in rows]
 
 
 def run_query(db, user: User, q: llm.QuerySpec, cats: dict[str, Category]) -> Answer:
@@ -186,7 +195,7 @@ def chat(body: ChatIn, db: DB, user: CurrentUser):
         result = llm.ask_llm(history, [c.name for c in cats.values()], user.currency, body.today)
         refused = result.intent if result.intent in REFUSALS else None
 
-    data, created = None, []
+    data, created, override = None, [], None
     if refused:
         data = {"refused": refused}  # whatever the model put in expenses/query is ignored
     elif result.intent == "log" and result.expenses:
@@ -209,11 +218,40 @@ def chat(body: ChatIn, db: DB, user: CurrentUser):
         data = {"logged": [Logged.model_validate(e, from_attributes=True).model_dump(mode="json") for e in created]}
     elif result.intent == "query" and result.query:
         data = {"answer": run_query(db, user, result.query, cats).model_dump(mode="json")}
+    elif result.intent == "iou" and result.ious:
+        try:
+            items = [
+                IouIn(
+                    person=i.person.strip()[:100], direction=i.direction, amount=i.amount.quantize(Decimal("0.01")),
+                    given_on=i.given_on, due_on=date.fromisoformat(i.due_on) if i.due_on.strip() else None,
+                    note=i.note.strip()[:500],
+                )
+                for i in result.ious
+            ]
+        except (ValueError, InvalidOperation):  # pydantic's ValidationError is a ValueError
+            raise HTTPException(502, "The assistant proposed an invalid IOU. Try rephrasing.")
+        rows = [Iou(user_id=user.id, **i.model_dump()) for i in items]
+        db.add_all(rows)
+        db.flush()
+        data = {"ious": _snapshots(rows)}
+    elif result.intent == "repay" and result.repayments:
+        rows = [iou for p in result.repayments for iou in repay(db, user.id, p.person, p.direction, p.amount)]
+        db.flush()
+        if rows:
+            data = {"ious": _snapshots(rows)}
+        else:  # say so plainly instead of letting the model claim a repayment that didn't happen
+            override = f"I couldn't find an open IOU with {', '.join(sorted({p.person.strip() for p in result.repayments}))}. Check the IOUs page."
+    elif result.intent == "owed":
+        rows = open_ious(db, user.id)[:10]
+        if rows:
+            data = {"ious": _snapshots(rows)}
+        else:
+            override = "No open IOUs: nobody owes you anything, and you don't owe anyone."
 
     asked = ChatMessage(user_id=user.id, role="user", content=body.message, data={"refused": refused} if refused else None)
     db.add(asked)
     db.flush()  # the question gets the lower id
-    text = REFUSALS[refused] if refused else result.reply.strip()[:1000] or "Done."
+    text = REFUSALS[refused] if refused else override or result.reply.strip()[:1000] or "Done."
     reply = ChatMessage(user_id=user.id, role="assistant", content=text, data=data)
     db.add(reply)
     db.commit()

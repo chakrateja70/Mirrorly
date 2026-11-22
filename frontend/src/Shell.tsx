@@ -1,4 +1,4 @@
-import { House, LogOut, Menu, Wallet, X } from 'lucide-react'
+import { HandCoins, House, LogOut, Menu, Wallet, X } from 'lucide-react'
 import { useState } from 'react'
 import { Link, Navigate, NavLink, Outlet } from 'react-router-dom'
 import {
@@ -14,6 +14,7 @@ import ThemeToggle from './ThemeToggle'
 const SECTIONS = [
   { to: '/', label: 'Home', Icon: House, end: true },
   { to: '/expenses', label: 'Expenses', Icon: Wallet, end: false },
+  { to: '/ious', label: 'IOUs', Icon: HandCoins, end: false },
   // future trackers (food, wardrobe, ...) get an entry here
 ]
 

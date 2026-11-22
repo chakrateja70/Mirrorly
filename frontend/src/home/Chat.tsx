@@ -1,7 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { ArrowUp, Bot, RotateCcw, TriangleAlert, Undo2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { api, METHOD_COLOR, queryClient, today, type Answer, type Category, type ChatMessage, type PaymentMethod } from '../api'
+import { Link } from 'react-router-dom'
+import { api, METHOD_COLOR, queryClient, today, type Answer, type Category, type ChatMessage, type Iou, type PaymentMethod } from '../api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
@@ -9,6 +10,9 @@ import { useMe, useMoney } from '../auth/useMe'
 import { Loading } from '../Skeleton'
 import { refreshExpenseData, useCategories } from '../features/expenses/queries'
 import CategoryAvatar from '../features/expenses/CategoryAvatar'
+import { dueText, isOpen, leftCents } from '../ious/ious'
+import PersonAvatar from '../ious/PersonAvatar'
+import { refreshIous } from '../ious/queries'
 
 /** The assistant's face: a glossy gradient orb that slowly turns (still when reduced motion is on). */
 const Orb = ({ className }: { className?: string }) => (
@@ -28,7 +32,7 @@ const bubble = (role: ChatMessage['role']) => cn(
 const SUGGESTIONS = [
   'I purchased a soap of cost 20 rupees',
   'How much did I spend on food this month?',
-  'What did I spend the most on last month?',
+  'I gave 500 to Rahul, he will return it in 5 days',
 ]
 
 type Money = (v: string | number) => string
@@ -99,6 +103,29 @@ function AnswerCard({ a, catById, money }: { a: Answer; catById: Map<string, Cat
   )
 }
 
+/** IOUs a reply recorded, repaid or listed; due status is as of today. */
+function IouCards({ ious, money }: { ious: Iou[]; money: Money }) {
+  return (
+    <div className="mt-2.5 grid gap-1.5">
+      <ul className="grid gap-1.5">
+        {ious.map((i) => (
+          <li key={i.id} className="flex items-center gap-2.5 rounded-xl bg-card py-2 pr-3 pl-2.5 text-card-foreground shadow-card">
+            <PersonAvatar name={i.person} small />
+            <span className="grid min-w-0 flex-1">
+              <span className="truncate text-sm font-medium">{i.direction === 'lent' ? `${i.person} owes you` : `You owe ${i.person}`}</span>
+              <small className="truncate text-xs text-muted-foreground">{isOpen(i) ? dueText(i, today()).text : 'Paid back in full ✓'}</small>
+            </span>
+            <strong className={cn('text-sm font-semibold tabular-nums', isOpen(i) && i.direction === 'lent' && 'text-good')}>
+              {money(isOpen(i) ? leftCents(i) / 100 : i.amount)}
+            </strong>
+          </li>
+        ))}
+      </ul>
+      <Link to="/ious" className="justify-self-start text-xs font-medium text-primary hover:underline">Open IOUs →</Link>
+    </div>
+  )
+}
+
 export default function Chat() {
   const money = useMoney()
   const firstName = useMe().data?.name.split(' ')[0]
@@ -116,6 +143,7 @@ export default function Chat() {
     onSuccess: (turn) => {
       queryClient.setQueryData<Item[]>(['chat'], (old = []) => [...old, ...stamp(turn)])
       if (turn.some((m) => m.logged.length)) refreshExpenseData()
+      if (turn.some((m) => m.ious.length)) refreshIous()
     },
     onError: (e, message) => setFailed({ text: message, error: e.message }),
   })
@@ -234,6 +262,7 @@ export default function Chat() {
               </ul>
             )}
             {m.answer && <AnswerCard a={m.answer} catById={catById} money={money} />}
+            {m.ious.length > 0 && <IouCards ious={m.ious} money={money} />}
           </div>
         ))}
 

@@ -306,6 +306,76 @@ def test_assistant_guardrails(monkeypatch):
     assert sent[-1]["response_format"]["json_schema"]["schema"]["properties"]["intent"]["enum"] == llm.INTENTS
 
 
+def test_ious(monkeypatch):
+    c = client_for("iou@example.com", unlock=False)
+    lent = {"person": "Rahul", "direction": "lent", "amount": "500", "given_on": "2026-11-22", "due_on": "2026-11-27"}
+    r = c.post("/api/ious", json=lent)
+    assert r.status_code == 201, r.text
+    iou = r.json()
+    assert (iou["amount"], iou["repaid"], iou["due_on"]) == ("500.00", "0.00", "2026-11-27")
+
+    # validation: no zero amounts, no due date before the money was given, no paying back more than owed
+    assert c.post("/api/ious", json={**lent, "amount": "0"}).status_code == 422
+    assert c.post("/api/ious", json={**lent, "due_on": "2026-11-01"}).status_code == 422
+    assert c.post("/api/ious", json={**lent, "direction": "gifted"}).status_code == 422
+    assert c.patch(f"/api/ious/{iou['id']}", json={"repaid": "600"}).status_code == 422
+    assert c.patch(f"/api/ious/{iou['id']}", json={"repaid": "200"}).json()["repaid"] == "200.00"
+    assert c.patch(f"/api/ious/{iou['id']}", json={"due_on": None}).json()["due_on"] is None  # due date can be cleared
+    # IOUs are not expenses
+    assert c.get("/api/expenses/summary", params={"month": "2026-11"}).json()["total"] == "0"
+
+    # private to each user
+    other = client_for("iou-other@example.com", unlock=False)
+    assert other.get("/api/ious").json() == []
+    assert other.patch(f"/api/ious/{iou['id']}", json={"repaid": "500"}).status_code == 404
+    assert other.delete(f"/api/ious/{iou['id']}").status_code == 404
+    assert c.delete(f"/api/ious/{iou['id']}").status_code == 204
+    assert c.get("/api/ious").json() == []
+
+    # through the assistant: lend, partial repayment, the rest, an unknown person, then "who owes me?"
+    monkeypatch.setattr(settings, "groq_api_key", "test-key")
+
+    def assistant(answer: dict, text: str):
+        post, sent = fake_groq({"intent": "chat", "reply": "", "expenses": [], "query": BLANK_QUERY, "ious": [], "repayments": [], **answer})
+        monkeypatch.setattr(llm.httpx, "post", post)
+        r = c.post("/api/assistant/chat", json={"message": text, "today": "2026-11-22"})
+        assert r.status_code == 200, r.text
+        return r.json()[1], sent
+
+    reply, sent = assistant({"intent": "iou", "reply": "Noted!", "ious": [
+        {"person": "Rahul ", "direction": "lent", "amount": 500, "given_on": "2026-11-22", "due_on": "2026-11-27", "note": "Movie"}]},
+        "I gave 500 to my friend Rahul, he told he will give it back after 5 days")
+    assert [(x["person"], x["direction"], x["amount"], x["due_on"]) for x in reply["ious"]] == [("Rahul", "lent", "500.00", "2026-11-27")]
+    assert sent[-1]["response_format"]["json_schema"]["schema"]["properties"]["ious"]["items"]["properties"]["direction"]["enum"] == ["lent", "borrowed"]
+    assert c.get("/api/expenses", params=NOV).json() == []  # lending is not spending
+
+    reply, sent = assistant({"intent": "repay", "reply": "Nice!", "repayments": [{"person": "RAHUL", "direction": "lent", "amount": 200}]},
+                            "rahul returned 200")
+    assert [(x["repaid"], x["amount"]) for x in reply["ious"]] == [("200.00", "500.00")]
+    assert "(IOUs: lent Rahul 500.00, repaid 0.00)" in sent[-1]["messages"][-2]["content"]  # the model sees the earlier IOU
+    reply, _ = assistant({"intent": "repay", "reply": "Settled!", "repayments": [{"person": "Rahul", "direction": "lent", "amount": 0}]},
+                         "he paid the rest")
+    assert reply["ious"][0]["repaid"] == "500.00"
+
+    reply, _ = assistant({"intent": "repay", "reply": "Priya paid you back!", "repayments": [{"person": "Priya", "direction": "lent", "amount": 0}]},
+                         "priya paid me back")
+    assert reply["content"] == "I couldn't find an open IOU with Priya. Check the IOUs page." and reply["ious"] == []
+
+    reply, _ = assistant({"intent": "owed", "reply": "Rahul owes you 500!"}, "who owes me money?")
+    assert reply["content"] == "No open IOUs: nobody owes you anything, and you don't owe anyone."
+    c.post("/api/ious", json={"person": "Priya", "direction": "borrowed", "amount": "300", "given_on": "2026-11-20"})
+    reply, _ = assistant({"intent": "owed", "reply": "Here's where things stand."}, "whom do I owe?")
+    assert [(x["person"], x["direction"]) for x in reply["ious"]] == [("Priya", "borrowed")]
+
+    # a garbled date from the model stores nothing
+    before = len(c.get("/api/ious").json())
+    post, _ = fake_groq({"intent": "iou", "reply": "x", "expenses": [], "query": BLANK_QUERY, "repayments": [], "ious": [
+        {"person": "Sam", "direction": "lent", "amount": 50, "given_on": "2026-11-22", "due_on": "next week", "note": ""}]})
+    monkeypatch.setattr(llm.httpx, "post", post)
+    assert c.post("/api/assistant/chat", json={"message": "lent sam 50", "today": "2026-11-22"}).status_code == 502
+    assert len(c.get("/api/ious").json()) == before
+
+
 def scripted_groq(*statuses, answer=None):
     """Fake Groq answering with these HTTP statuses in order (400 = the gpt-oss tool-call misfire)."""
     temperatures = []

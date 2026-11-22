@@ -5,6 +5,7 @@ import CategoriesPage from './features/expenses/CategoriesPage'
 import ExpensesLayout from './features/expenses/ExpensesLayout'
 import TransactionsPage from './features/expenses/TransactionsPage'
 import HomePage from './home/HomePage'
+import IousPage from './ious/IousPage'
 import Shell from './Shell'
 import { ChartsSkeleton } from './Skeleton'
 
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/register" element={<AuthPage mode="register" />} />
         <Route element={<Shell />}>
           <Route index element={<HomePage />} />
+          <Route path="ious" element={<IousPage />} />
           <Route path="expenses" element={<ExpensesLayout />}>
             <Route index element={<TransactionsPage />} />
             <Route path="analytics" element={<Suspense fallback={<ChartsSkeleton />}><AnalyticsPage /></Suspense>} />
