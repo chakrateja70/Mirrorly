@@ -5,6 +5,7 @@ from app.auth.models import User  # noqa: F401
 from app.db import Base, engine
 from app.expenses.models import Category, Expense  # noqa: F401
 from app.ious.models import Iou  # noqa: F401
+from app.wellness.models import Meal, WellnessDay, WellnessPlan, WellnessProfile  # noqa: F401
 
 # URL comes from app settings (.env / DATABASE_URL), not alembic.ini.
 with engine.connect() as connection:

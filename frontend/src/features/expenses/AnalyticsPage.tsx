@@ -8,6 +8,7 @@ import {
 } from 'recharts'
 import { METHOD_COLOR, PAYMENT_METHODS, today, type Category, type Expense, type PaymentMethod } from '../../api'
 import { useMe, useMoney } from '../../auth/useMe'
+import { TICK, TOOLTIP } from './chartStyle'
 import { ChartsSkeleton } from '../../Skeleton'
 import CategoryAvatar from './CategoryAvatar'
 import FilterBar from './FilterBar'
@@ -17,12 +18,6 @@ import { useCategories, useExpenses } from './queries'
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const MAX_SLICES = 6 // past this the tail folds into one "N more" slice
 const DAY_MS = 86_400_000
-const TOOLTIP = {
-  contentStyle: { background: 'var(--popover)', border: 'none', borderRadius: 12, boxShadow: '0 8px 24px rgb(0 0 0 / 0.18)', padding: '8px 12px' },
-  itemStyle: { color: 'var(--foreground)' },
-  labelStyle: { color: 'var(--muted-foreground)', marginBottom: 2 },
-}
-const TICK = { fill: 'var(--muted-foreground)', fontSize: 12 }
 
 const cents = (amount: string) => Math.round(Number(amount) * 100)
 
@@ -95,7 +90,7 @@ function analyze(list: Expense[], f: Filters, cats: Category[]) {
   return { total, count: list.length, largest, categorySlices, methodSlices, daily, series, weekday, budgets, months, elapsed }
 }
 
-function ChartCard({ title, table, children }: { title: string; table?: [string, string][]; children: ReactNode }) {
+export function ChartCard({ title, table, children }: { title: string; table?: [string, string][]; children: ReactNode }) {
   return (
     <Card className="gap-4 p-5" aria-label={title} role="region">
       <h3 className="font-semibold tracking-tight">{title}</h3>
@@ -117,7 +112,7 @@ function ChartCard({ title, table, children }: { title: string; table?: [string,
 }
 
 /** One headline number, with an icon chip so the four tiles tell apart at a glance. */
-function Kpi({ Icon, label, value, note }: { Icon: LucideIcon; label: string; value: string; note: string }) {
+export function Kpi({ Icon, label, value, note }: { Icon: LucideIcon; label: string; value: string; note: string }) {
   return (
     <Card className="min-w-0 gap-1 p-4">
       <span className="mb-2 grid size-9 place-items-center rounded-xl bg-accent text-accent-foreground"><Icon className="size-[1.125rem]" aria-hidden /></span>

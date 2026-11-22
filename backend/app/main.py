@@ -6,6 +6,7 @@ from app.auth.router import router as auth_router
 from app.config import settings
 from app.expenses.router import router as expenses_router
 from app.ious.router import router as ious_router
+from app.wellness.router import router as wellness_router
 
 app = FastAPI(title="Mirrorly API")
 
@@ -29,7 +30,8 @@ api.include_router(auth_router)
 api.include_router(expenses_router)
 api.include_router(assistant_router)
 api.include_router(ious_router)
-# future trackers (food, wardrobe, ...) mount here
+api.include_router(wellness_router)
+# future trackers (wardrobe, ...) mount here
 
 
 @api.get("/health")

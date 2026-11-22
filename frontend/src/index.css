@@ -120,9 +120,6 @@
 }
 
 /* Page-state overrides of utility classes: unlayered on purpose, since anything inside a @layer loses to utilities. */
-/* Home is one screen: the page doesn't scroll, only the chat log does (unless the screen is shorter than the minimums) */
-.main:has(.home) { display: flex; flex-direction: column; height: 100dvh; }
-.content:has(> .home) { flex: 1; min-height: 0; width: 100%; display: flex; flex-direction: column; padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
 /* the add button would cover "Apply" while the filter panel is open */
 .filterbar:has(.filter-panel) ~ .fab { display: none; }
 
@@ -152,3 +149,67 @@
 @media (prefers-reduced-motion: reduce) {
   .skel, .typing i { animation: none; }
 }
+
+/* ---- Food & Health roadmap (health/Roadmap.tsx): a day-sky drive ----
+   Dark asphalt with a warm dashed centre line and red-and-white kerbs in both themes; the travelled part glows in a
+   sunrise-to-violet gradient with light flowing along it. */
+:root { --road: #3d3b4f; --road-dash: #fde68a; --kerb-a: #ffffff; --kerb-b: #ef4444; }
+.dark { --road: #26253a; --kerb-a: #d4d4d8; --kerb-b: #dc2626; }
+svg.road path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.road-kerb-base { stroke: var(--kerb-a); stroke-width: 38; }
+.road-kerb { stroke: var(--kerb-b); stroke-width: 38; stroke-dasharray: 10 10; stroke-linecap: butt; }
+.road-asphalt { stroke: var(--road); stroke-width: 30; }
+.road-travelled { stroke-width: 30; filter: drop-shadow(0 0 8px rgb(168 85 247 / 0.55)); }
+.road-dash { stroke: var(--road-dash); stroke-width: 2.5; stroke-dasharray: 12 12; opacity: 0.9; }
+.road-flow { stroke: rgb(255 255 255 / 0.75); stroke-width: 3; stroke-dasharray: 2 22; animation: road-flow 1.1s linear infinite; }
+
+/* the night part of the sky: a scatter of stars that fades in and twinkles */
+.road-stars {
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 18%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 32% 62%, #fff 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 58% 28%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 78% 72%, #fff 50%, transparent 51%),
+    radial-gradient(2px 2px at 88% 12%, #fff 50%, transparent 51%), radial-gradient(1px 1px at 44% 88%, #fff 50%, transparent 51%),
+    radial-gradient(1px 1px at 4% 48%, #fff 50%, transparent 51%), radial-gradient(1.5px 1.5px at 68% 52%, #fef3c7 50%, transparent 51%);
+  background-size: 220px 190px;
+  mask-image: linear-gradient(to bottom, transparent, #000 140px);
+  opacity: 0.85;
+  animation: road-twinkle 3.5s ease-in-out infinite alternate;
+}
+/* the finish line */
+.road-finish { background: repeating-conic-gradient(#18181b 0% 25%, #fafafa 0% 50%) 0 0 / 16px 16px; }
+
+/* "you are here": a slowly turning gradient border */
+@property --road-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+.road-now { background: conic-gradient(from var(--road-angle), #f59e0b, #8b5cf6, #d946ef, #22d3ee, #f59e0b); animation: road-spin 4s linear infinite; }
+
+/* the car: hidden unless it can drive (scroll-driven animations + motion paths, and motion welcome) */
+.road-car {
+  position: absolute; top: 0; left: 0; z-index: 15; display: none; place-items: center;
+  width: 2.6rem; height: 2.6rem; border-radius: 9999px; color: #fff;
+  background: linear-gradient(135deg, #f43f5e, #f97316);
+  box-shadow: 0 0 0 3px #fff, 0 8px 20px rgb(244 63 94 / 0.45);
+  offset-anchor: 50% 50%; offset-rotate: 0deg;
+}
+
+/* Scroll-driven (Baseline 2026): the road draws itself down to the bottom of the screen as you scroll, stops pop in
+   as they enter, and the car drives along the road level with the middle of the screen. Unsupported browsers and
+   reduced motion get the finished road with no car. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .road-wrap { view-timeline: --road block; }
+    .road-reveal { stroke-dasharray: 1; animation: road-draw linear both; animation-timeline: --road; animation-range: cover 0% contain 100%; }
+    .road-card { animation: road-card-in linear both; animation-timeline: view(); animation-range: entry 0% entry 60%; }
+    .road-pin { animation: road-pin-in linear both; animation-timeline: view(); animation-range: entry 10% entry 70%; }
+    .road-car { display: grid; animation: road-drive linear both; animation-timeline: --road; animation-range: cover 50vh cover calc(100% - 50vh); }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .road-flow, .road-stars, .road-now { animation: none; }
+}
+@keyframes road-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes road-card-in { from { opacity: 0; transform: translateY(1.5rem) scale(0.97); } }
+@keyframes road-pin-in { from { opacity: 0; scale: 0.3; } }
+@keyframes road-drive { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+@keyframes road-flow { to { stroke-dashoffset: -24; } }
+@keyframes road-twinkle { to { opacity: 0.45; } }
+@keyframes road-spin { to { --road-angle: 360deg; } }

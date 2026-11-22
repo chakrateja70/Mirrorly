@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     budget_pin: str = "1234"  # PIN required to change categories and budgets
     groq_api_key: str = ""  # empty = chat assistant disabled
     groq_model: str = "openai/gpt-oss-20b"  # must support structured outputs (json_schema)
+    groq_plan_model: str = "openai/gpt-oss-120b"  # Food & Health plans: the bigger model writes better ones
     groq_whisper_model: str = "whisper-large-v3-turbo"  # voice messages -> text (multilingual: Hindi, Hinglish, ...)
 
 

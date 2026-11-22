@@ -1,4 +1,4 @@
-import { HandCoins, House, LogOut, Menu, Wallet, X } from 'lucide-react'
+import { HandCoins, House, LogOut, Menu, Salad, Wallet, X } from 'lucide-react'
 import { useState } from 'react'
 import { Link, Navigate, NavLink, Outlet } from 'react-router-dom'
 import {
@@ -15,7 +15,8 @@ const SECTIONS = [
   { to: '/', label: 'Home', Icon: House, end: true },
   { to: '/expenses', label: 'Expenses', Icon: Wallet, end: false },
   { to: '/ious', label: 'IOUs', Icon: HandCoins, end: false },
-  // future trackers (food, wardrobe, ...) get an entry here
+  { to: '/health', label: 'Food & Health', Icon: Salad, end: false },
+  // future trackers (wardrobe, ...) get an entry here
 ]
 
 export default function Shell() {

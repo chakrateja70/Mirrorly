@@ -73,6 +73,122 @@ export type Iou = {
   due_on: string | null
   note: string
 }
+// ---- Food & Health (backend /wellness). Times are "HH:MM", minutes are numbers. ----
+export type Slot = 'breakfast' | 'lunch' | 'snack' | 'dinner'
+export type HealthProfile = {
+  birth_year: number
+  sex: 'male' | 'female' | 'other'
+  height_cm: number
+  weight_kg: number
+  target_weight_kg: number | null
+  occupation: string
+  activity: 'sedentary' | 'light' | 'moderate' | 'active'
+  work_mode: 'office' | 'home' | 'hybrid' | 'none'
+  work_start: string | null
+  work_end: string | null
+  commute_minutes: number
+  wake_time: string
+  bed_time: string
+  workout_time: string | null
+  diet: 'veg' | 'eggetarian' | 'non_veg' | 'vegan' | 'jain'
+  cuisine: string
+  usual_meals: Partial<Record<Slot, { time: string; food: string }>>
+  allergies: string[]
+  dislikes: string[]
+  conditions: string[]
+  health_notes: string
+  sleep_issues: string[]
+  stress: 'low' | 'medium' | 'high' | null
+  caffeine_cups: number | null
+  alcohol: 'never' | 'occasionally' | 'weekly' | 'daily' | null
+  smoking: 'never' | 'occasionally' | 'daily' | null
+  eating_out: 'rarely' | 'weekly' | 'often' | 'daily' | null
+  cooking: 'self' | 'family' | 'canteen' | 'order' | null
+  goal: 'lose' | 'maintain' | 'gain' | 'energy' | 'sleep'
+  screen_goal_minutes: number
+  water_goal_ml: number
+}
+export type Unit = 'cup' | 'bowl' | 'plate' | 'piece' | 'slice' | 'g' | 'ml' | 'glass' | 'tbsp' | 'tsp' | 'serving'
+/** One food with its amount, as entered for a meal. */
+export type Portion = { name: string; qty: number; unit: Unit }
+/** One food the model read out of a meal; kcal and protein are estimates (shown with ≈). */
+export type MealItem = { name: string; base: string; qty: string; kcal: number; protein_g: number; tags: string[] }
+export type Meal = { id: string; day: string; slot: Slot; eaten_at: string | null; text: string; items: MealItem[]; kcal: number }
+export type CheckIn = {
+  bed_time: string | null
+  wake_time: string | null
+  sleep_minutes: number | null
+  sleep_quality: number | null
+  screen_minutes: number | null
+  water_ml: number | null
+  exercise_minutes: number | null
+  energy: number | null
+  note: string
+}
+export type HealthDay = CheckIn & { day: string; meals: Meal[] }
+/** Computed by the app (never the model). */
+export type Targets = {
+  sleep_need: number
+  wake: string
+  bedtime: string
+  ideal_bedtime: string
+  screen_target: number
+  screen_yesterday: number | null
+  kcal: number | null
+  protein_g: number
+  water_ml: number
+  dinner_by: string
+  caffeine_by: string
+}
+export type Insight = { code: string; level: 'warn' | 'info' | 'good'; title: string; tip: string }
+export type StopKind = 'wake' | 'hydrate' | 'meal' | 'snack' | 'exercise' | 'work' | 'break' | 'screen' | 'wind_down' | 'sleep'
+export type PlanStop = { time: string; kind: StopKind; title: string; detail: string; foods: string[] }
+export type DayPlan = {
+  headline: string
+  stops: PlanStop[]
+  eat_more: { food: string; why: string }[]
+  cut_back: { food: string; why: string; swap: string }[]
+  exercises: { name: string; minutes: number; when: string; why: string }[]
+}
+type WeekNumbers = { bedtime: string | null; screen_minutes: number | null; exercise_minutes: number | null; heavy_days: number | null }
+export type JourneyWeek = {
+  week: number
+  start: string
+  end: string
+  bedtime: string
+  screen_minutes: number
+  exercise_minutes: number
+  heavy_days: number
+  title: string
+  tips: string[]
+  status: 'done' | 'current' | 'upcoming'
+  actual: WeekNumbers
+  met: Record<keyof WeekNumbers, boolean>
+}
+export type Journey = { headline: string; start: string; weeks: JourneyWeek[] }
+/** Everything the Today screen needs, in one request. */
+export type HealthToday = { targets: Targets; insights: Insight[]; plan: DayPlan | null; journey: Journey | null; log: HealthDay }
+/** What a chat message logged in Food & Health. */
+export type HealthLogged = { day: string; meals: Meal[]; checkin: Partial<Record<'bed_time' | 'wake_time', string> & Record<'sleep_minutes' | 'screen_minutes' | 'water_ml' | 'exercise_minutes', number>> }
+
+/** What the chat shows for a Food & Health question: figures from the logs (never the model), next stops, or foods. */
+export type HealthAnswer = {
+  topic: 'sleep' | 'screen' | 'water' | 'exercise' | 'energy' | 'meals' | 'plan' | 'advice'
+  label: string
+  start: string | null
+  end: string | null
+  unit: '' | 'minutes' | 'ml' | 'scale'
+  values: { day: string; value: number }[]
+  avg: number | null
+  total: number | null
+  target: number | null
+  meals: Meal[]
+  heavy_days: number | null
+  headline: string
+  stops: PlanStop[]
+  foods: string[]
+}
+
 export type ChatMessage = {
   id: number
   role: 'user' | 'assistant'
@@ -80,6 +196,8 @@ export type ChatMessage = {
   logged: LoggedExpense[]
   answer: Answer | null
   ious: Iou[] // recorded, repaid or listed by this reply, as they were then
+  health: HealthLogged | null // food, sleep, screen time... this reply logged
+  health_answer: HealthAnswer | null // a Food & Health question's answer
   voice: boolean // the user's message was spoken
   age: number // seconds since stored, by the server clock
 }

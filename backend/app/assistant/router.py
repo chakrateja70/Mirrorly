@@ -1,6 +1,6 @@
 """Home chat: log expenses from natural language and answer spending questions. History is stored per user."""
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Literal
 
@@ -17,6 +17,7 @@ from app.expenses.models import Category, Expense
 from app.expenses.schemas import ExpenseIn
 from app.ious.models import Iou
 from app.ious.router import IouIn, IouOut, open_ious, repay
+from app.wellness.router import HealthAnswer, MealOut, add_meal, answer_stats, coach_reply, get_profile, next_stops, save_checkin
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
@@ -26,8 +27,9 @@ SHOWN = 100  # ponytail: newest 100 messages only; add a `before` cursor if olde
 # The reply when the assistant won't help: fixed text, so nothing the model writes for these ever reaches the user
 # (it can't answer "which AI are you?" or claim "done, everything deleted").
 REFUSALS = {
-    "off_topic": "I'm Mirrorly's assistant, so I can only help with your expenses: tell me what you spent "
-                 "(\"Coffee 80\") or ask about your spending (\"How much on food this month?\").",
+    "off_topic": "I'm Mirrorly's assistant, so I can only help with your expenses and your Food & Health log: tell me "
+                 "what you spent (\"Coffee 80\"), what you ate or how you slept (\"2 idli and sambar for breakfast\"), "
+                 "or ask about your spending (\"How much on food this month?\").",
     "unsafe": "I can't do that. I can only add expenses and answer questions about them; I never delete or change "
               "your data in bulk. To remove an expense, tap it in Expenses > Transactions.",
 }
@@ -37,6 +39,7 @@ class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
     today: date  # the client's local date, so "yesterday" resolves in the user's timezone
     voice: bool = False  # typed by voice (transcribed); shown with a mic on the message
+    now: time | None = None  # the client's local time, for "what's next on my route?"
 
 
 class Logged(BaseModel):
@@ -72,6 +75,13 @@ class Answer(BaseModel):
     budget: Decimal | None = None  # question about one budgeted category: its limit x months in range
 
 
+class HealthLogged(BaseModel):
+    """What a Food & Health message recorded (snapshot, as it was then)."""
+    day: date
+    meals: list[MealOut] = []
+    checkin: dict = {}  # check-in fields set: bed_time/wake_time "HH:MM", minutes and ml as numbers
+
+
 class MessageOut(BaseModel):
     id: int
     role: Literal["user", "assistant"]
@@ -79,6 +89,8 @@ class MessageOut(BaseModel):
     logged: list[LoggedOut] = []
     answer: Answer | None = None
     ious: list[IouOut] = []  # IOUs this reply recorded, repaid or listed (as they were then)
+    health: HealthLogged | None = None  # food, sleep, screen time... this reply logged
+    health_answer: HealthAnswer | None = None  # figures, next stops or suggested foods for a Food & Health question
     voice: bool = False  # the user's message was spoken
     age: int  # seconds since stored, by the server clock (drives the 1-minute undo window; immune to client clock skew)
 
@@ -95,6 +107,7 @@ def _out(m: ChatMessage, alive: set[str]) -> MessageOut:
     d = m.data or {}
     return MessageOut(
         id=m.id, role=m.role, content=m.content, answer=d.get("answer"), ious=d.get("ious", []), voice=d.get("voice", False),
+        health=d.get("health"), health_answer=d.get("health_answer"),
         logged=[LoggedOut(**x, removed=x["id"] not in alive) for x in d.get("logged", [])],
         age=max(0, int((datetime.now(UTC) - m.created_at).total_seconds())),
     )
@@ -110,6 +123,11 @@ def _for_model(m: ChatMessage, alive: set[str]) -> dict:
         text += f"\n(Answer shown: {a['label']}: total {a['total']}, {a['count']} expenses)"
     if ious := d.get("ious"):  # so "he returned it" knows who "he" is
         text += "\n(IOUs: " + "; ".join(f"{x['direction']} {x['person']} {x['amount']}, repaid {x['repaid']}" for x in ious) + ")"
+    if h := d.get("health"):  # so "and for dinner…" doesn't re-log lunch
+        facts = [f"{m['slot']} {m['text']}" for m in h["meals"]] + [f"{k} {v}" for k, v in h["checkin"].items()]
+        text += f"\n(Logged health for {h['day']}: " + "; ".join(facts) + ")"
+    if (q := d.get("health_answer")) and q["topic"] not in ("advice", "plan"):  # so "and last week?" keeps the topic
+        text += f"\n(Answer shown: {q['label']}, {q['start']} to {q['end']})"
     return {"role": m.role, "content": text}
 
 
@@ -160,6 +178,64 @@ def run_query(db, user: User, q: llm.QuerySpec, cats: dict[str, Category]) -> An
                   group_by=q.group_by, groups=groups, largest=largest, budget=budget)
 
 
+CHECKIN_LIMITS = {"sleep_minutes": 1440, "screen_minutes": 1440, "water_ml": 10000, "exercise_minutes": 1440}
+
+
+def _log_health(db, user: User, h: llm.HealthLog, today: date) -> tuple[dict | None, str | None]:
+    """Store what a Food & Health message said: check-in fields, then each meal (read by the meal model)."""
+    try:
+        day = date.fromisoformat(h.day) if h.day.strip() else today
+        fields = {k: time.fromisoformat(v.strip()) for k in ("bed_time", "wake_time") if (v := getattr(h, k)).strip()}
+        meals = [(m.slot, time.fromisoformat(m.eaten_at.strip()) if m.eaten_at.strip() else None, m.text.strip()[:300])
+                 for m in h.meals if m.text.strip()]
+    except ValueError:
+        raise HTTPException(502, "The assistant didn't get the details right. Try rephrasing.")
+    day = min(day, today)  # nothing gets logged into the future
+    fields |= {k: min(v, cap) for k, cap in CHECKIN_LIMITS.items() if (v := getattr(h, k)) >= 0}
+    if not fields and not meals:
+        return None, "Tell me what you ate, how long you slept, or your screen time, and I'll log it in Food & Health."
+    checkin = {}
+    if fields:
+        row = save_checkin(db, user.id, day, fields)
+        checkin = {k: v.strftime("%H:%M") if isinstance(v, time) else v for k, v in fields.items()}
+        if row.sleep_minutes is not None and {"bed_time", "wake_time"} & fields.keys():
+            checkin["sleep_minutes"] = row.sleep_minutes
+    rows = [add_meal(db, user.id, day, *m) for m in meals]
+    logged = HealthLogged(day=day, meals=[MealOut.model_validate(r) for r in rows], checkin=checkin)
+    return {"health": logged.model_dump(mode="json")}, None
+
+
+NAMES = {"sleep": "sleep", "screen": "screen time", "water": "water", "exercise": "exercise", "energy": "energy", "meals": "meals"}
+
+
+def _answer_health(db, user: User, q: llm.HealthAsk, today: date, now: time | None, history: list[dict]) -> tuple[dict | None, str | None]:
+    """A Food & Health question: figures from the logs, the rest of today's route, or a coach answer."""
+    p = get_profile(db, user.id)
+    if not p:
+        return None, "Set up Food & Health first (it takes two minutes), then I can answer from your own logs and plan."
+    if q.topic == "advice":
+        answer, foods = coach_reply(db, user.id, p, today, now, history)
+        return {"health_answer": HealthAnswer(topic="advice", foods=foods).model_dump(mode="json")}, answer
+    if q.topic == "plan":
+        a = next_stops(db, user.id, today, now)
+        if a is None:
+            return None, "You don't have a plan for today yet. Open Food & Health and tap Make my plan."
+        if not a.stops:
+            return None, "That's everything on today's route. Sleep well!"
+        return {"health_answer": a.model_dump(mode="json")}, None
+    try:
+        start, end = sorted((date.fromisoformat(q.start), date.fromisoformat(q.end)))
+    except ValueError:
+        start, end = today - timedelta(days=6), today
+    end = min(end, today)
+    start = min(max(start, end - timedelta(days=92)), end)
+    a = answer_stats(db, user.id, p, q.topic, start, end, q.label.strip()[:60] or f"Your {NAMES[q.topic]}")
+    if not a.values and not a.meals:
+        return None, (f"I don't see any {NAMES[q.topic]} logged for that period. Log it in Food & Health, or just tell me "
+                      "(\"slept 11 to 7\", \"had dosa for breakfast\").")
+    return {"health_answer": a.model_dump(mode="json")}, None
+
+
 @router.get("/messages", response_model=list[MessageOut])
 def messages(db: DB, user: CurrentUser):
     rows = db.scalars(
@@ -195,7 +271,8 @@ def transcribe(audio: UploadFile, db: DB, user: CurrentUser):
     if len(data) > MAX_AUDIO:
         raise HTTPException(413, "That recording is too long. Keep voice messages under a minute.")
     cats = db.scalars(select(Category.name).where(Category.user_id == user.id)).all()
-    hint = f"Spending and money in {user.currency}. Coffee 80, lent 500 to Rahul, paid by UPI, GPay, card, cash. Categories: {', '.join(cats)}."
+    hint = (f"Spending and money in {user.currency}. Coffee 80, lent 500 to Rahul, paid by UPI, GPay, card, cash. "
+            f"Slept 7 hours, 2 idli and sambar, biryani, 5 hours screen time. Categories: {', '.join(cats)}.")
     text = llm.transcribe(data, audio.filename or "voice.webm", kind, hint)
     if not text:
         raise HTTPException(422, "I didn't catch that. Try again, a little closer to the mic.")
@@ -270,6 +347,10 @@ def chat(body: ChatIn, db: DB, user: CurrentUser):
             data = {"ious": _snapshots(rows)}
         else:  # say so plainly instead of letting the model claim a repayment that didn't happen
             override = f"I couldn't find an open IOU with {', '.join(sorted({p.person.strip() for p in result.repayments}))}. Check the IOUs page."
+    elif result.intent == "health" and result.health:
+        data, override = _log_health(db, user, result.health, body.today)
+    elif result.intent == "health_ask" and result.health_ask:
+        data, override = _answer_health(db, user, result.health_ask, body.today, body.now, history)
     elif result.intent == "owed":
         rows = open_ious(db, user.id)[:10]
         if rows:

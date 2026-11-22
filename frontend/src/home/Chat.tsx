@@ -1,8 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { ArrowUp, Bot, Mic, RotateCcw, TriangleAlert, Undo2, X } from 'lucide-react'
+import { ArrowUp, Mic, RotateCcw, TriangleAlert, Undo2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, METHOD_COLOR, queryClient, today, type Answer, type Category, type ChatMessage, type Iou, type PaymentMethod } from '../api'
+import { api, METHOD_COLOR, queryClient, today, type Answer, type Category, type ChatMessage, type HealthAnswer, type HealthLogged, type Iou, type PaymentMethod } from '../api'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
@@ -13,16 +13,11 @@ import CategoryAvatar from '../features/expenses/CategoryAvatar'
 import { dueText, isOpen, leftCents } from '../ious/ious'
 import PersonAvatar from '../ious/PersonAvatar'
 import { refreshIous } from '../ious/queries'
+import { nowHHMM, SLOTS, STOP, TAG_LABEL, tagTone } from '../health/health'
+import { refreshHealth } from '../health/queries'
+import { clock, hm } from '../health/road'
+import Orb from './Orb'
 import { canRecord, extFor, useVoiceRecorder, type Take } from './useVoiceRecorder'
-
-/** The assistant's face: a glossy gradient orb that slowly turns (still when reduced motion is on). */
-const Orb = ({ className }: { className?: string }) => (
-  <span className={cn('relative isolate grid place-items-center overflow-hidden rounded-full shadow-lg shadow-violet-500/30', className)} aria-hidden>
-    <span className="absolute -inset-1/4 -z-10 animate-[spin_7s_linear_infinite] bg-[conic-gradient(#6366f1,#a855f7,#ec4899,#22d3ee,#6366f1)] motion-reduce:animate-none" />
-    <span className="absolute inset-x-[18%] top-[8%] -z-10 h-[38%] rounded-full bg-white/35 blur-[3px]" />
-    <Bot className="size-[52%] text-white drop-shadow-[0_1px_2px_rgb(0_0_0/0.35)]" />
-  </span>
-)
 
 /** Chat bubble: mine on the right in the brand color, the assistant's on the left. */
 const bubble = (role: ChatMessage['role']) => cn(
@@ -34,6 +29,9 @@ const SUGGESTIONS = [
   'I purchased a soap of cost 20 rupees',
   'How much did I spend on food this month?',
   'I gave 500 to Rahul, he will return it in 5 days',
+  'Slept at 1 am, woke at 8, had idli and sambar',
+  'What should I eat for dinner?',
+  'How much did I sleep this week?',
 ]
 
 type Money = (v: string | number) => string
@@ -127,7 +125,136 @@ function IouCards({ ious, money }: { ious: Iou[]; money: Money }) {
   )
 }
 
-export default function Chat() {
+/** Food, sleep and screen time a reply logged in Food & Health. */
+function HealthCard({ h }: { h: HealthLogged }) {
+  const c = h.checkin
+  const facts = [
+    c.sleep_minutes != null && `Slept ${hm(c.sleep_minutes)}${c.bed_time && c.wake_time ? ` (${clock(c.bed_time)} – ${clock(c.wake_time)})` : ''}`,
+    c.screen_minutes != null && `Screen ${hm(c.screen_minutes)}`,
+    c.exercise_minutes != null && `Exercise ${c.exercise_minutes} min`,
+    c.water_ml != null && `Water ${c.water_ml.toLocaleString()} ml`,
+  ].filter(Boolean)
+  return (
+    <div className="mt-2.5 grid gap-1.5">
+      <ul className="grid gap-1.5">
+        {h.meals.map((m) => {
+          const slot = SLOTS.find((s) => s.value === m.slot)!
+          const tags = [...new Set(m.items.flatMap((i) => i.tags))].slice(0, 3)
+          return (
+            <li key={m.id} className="flex items-center gap-2.5 rounded-xl bg-card py-2 pr-3 pl-2.5 text-card-foreground shadow-card">
+              <span className="grid size-8 flex-none place-items-center rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"><slot.Icon className="size-4" aria-hidden /></span>
+              <span className="grid min-w-0 flex-1 gap-0.5">
+                <span className="truncate text-sm font-medium">{m.items.map((i) => i.name).join(', ') || m.text}</span>
+                <span className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                  {slot.label}{h.day !== today() && ` · ${shortDate(h.day)}`}
+                  {tags.map((t) => <span key={t} className={cn('rounded-full px-1.5 text-[0.68rem] font-medium', tagTone(t))}>{TAG_LABEL[t] ?? t}</span>)}
+                </span>
+              </span>
+              <small className="text-xs text-muted-foreground tabular-nums">≈ {m.kcal} kcal</small>
+            </li>
+          )
+        })}
+        {facts.length > 0 && (
+          <li className="rounded-xl bg-card px-3 py-2 text-sm text-card-foreground shadow-card">{facts.join(' · ')}{h.day !== today() && <span className="text-muted-foreground"> · {shortDate(h.day)}</span>}</li>
+        )}
+      </ul>
+      <Link to="/health" className="justify-self-start text-xs font-medium text-primary hover:underline">Open Food & Health →</Link>
+    </div>
+  )
+}
+
+const foodChip = 'rounded-full bg-emerald-500/12 px-2.5 py-1 text-xs font-medium text-emerald-800 dark:text-emerald-300'
+const openLink = (to: string, label: string) => <Link to={to} className="justify-self-start text-xs font-medium text-primary hover:underline">{label} →</Link>
+const FORMAT: Record<HealthAnswer['unit'], (v: number) => string> = {
+  minutes: (v) => hm(v), ml: (v) => `${Math.round(v).toLocaleString()} ml`, scale: (v) => `${v.toFixed(1)} / 5`, '': String,
+}
+const TARGET_WORD: Partial<Record<HealthAnswer['topic'], string>> = { sleep: 'need', screen: 'goal', water: 'goal' }
+
+/** A Food & Health question: figures from the logs (computed by the app), the rest of today's route, or suggested foods. */
+function HealthAnswerCard({ a }: { a: HealthAnswer }) {
+  if (a.topic === 'advice') {
+    return a.foods.length > 0 && (
+      <div className="mt-2.5 grid gap-1.5">
+        <span className="flex flex-wrap gap-1">{a.foods.map((f) => <span key={f} className={foodChip}>{f}</span>)}</span>
+        {openLink('/health', 'Open Food & Health')}
+      </div>
+    )
+  }
+  if (a.topic === 'plan') {
+    return (
+      <div className="mt-2.5 grid gap-1.5">
+        <ul className="grid gap-1.5">
+          {a.stops.map((s) => {
+            const { Icon, tint } = STOP[s.kind]
+            return (
+              <li key={s.time + s.title} className="flex items-center gap-2.5 rounded-xl bg-card py-2 pr-3 pl-2.5 text-card-foreground shadow-card">
+                <span className={cn('grid size-8 flex-none place-items-center rounded-lg text-white', tint)}><Icon className="size-4" aria-hidden /></span>
+                <span className="grid min-w-0 flex-1">
+                  <span className="truncate text-sm font-medium">{s.title}</span>
+                  {s.foods.length > 0 && <small className="truncate text-xs text-muted-foreground">{s.foods.join(', ')}</small>}
+                </span>
+                <small className="text-xs font-medium text-muted-foreground tabular-nums">{clock(s.time)}</small>
+              </li>
+            )
+          })}
+        </ul>
+        {openLink('/health', "Open today's route")}
+      </div>
+    )
+  }
+  const range = a.start && a.end && (a.start === a.end ? shortDate(a.start) : `${shortDate(a.start)} – ${shortDate(a.end)}`)
+  if (a.topic === 'meals') {
+    return (
+      <div className="mt-2.5 grid min-w-[min(300px,70vw)] gap-1.5 rounded-xl bg-card p-3.5 text-card-foreground shadow-card">
+        <small className="text-xs text-muted-foreground">{a.label} · {range}</small>
+        <strong className="text-lg font-semibold tracking-tight">
+          {a.total} meal{a.total === 1 ? '' : 's'}
+          {a.heavy_days ? <span className="text-sm font-normal text-muted-foreground"> · heavy food on {a.heavy_days} day{a.heavy_days === 1 ? '' : 's'}</span> : null}
+        </strong>
+        <ul className="grid gap-1">
+          {a.meals.slice(-8).map((m) => (
+            <li key={m.id} className="flex gap-2 text-sm">
+              <span className="w-24 flex-none text-xs text-muted-foreground">{a.start !== a.end && `${shortDate(m.day)} · `}{SLOTS.find((s) => s.value === m.slot)?.label}</span>
+              <span className="min-w-0 flex-1 truncate">{m.items.map((i) => i.name).join(', ') || m.text}</span>
+              <small className="text-xs text-muted-foreground tabular-nums">≈ {m.kcal}</small>
+            </li>
+          ))}
+        </ul>
+        {openLink('/health', 'Open Food & Health')}
+      </div>
+    )
+  }
+  // one measure over days: the average against the target, and a bar per logged day
+  const fmt = FORMAT[a.unit]
+  const top = Math.max(a.target ?? 0, ...a.values.map((v) => v.value), 1)
+  const facts = [
+    a.target !== null && TARGET_WORD[a.topic] && `${TARGET_WORD[a.topic]} ${fmt(a.target)}`,
+    a.topic === 'exercise' && a.total !== null && `total ${fmt(a.total)}`,
+    `${a.values.length} day${a.values.length === 1 ? '' : 's'} logged`,
+  ]
+  return (
+    <div className="mt-2.5 grid min-w-[min(300px,70vw)] gap-1 rounded-xl bg-card p-3.5 text-card-foreground shadow-card">
+      <small className="text-xs text-muted-foreground">{a.label} · {range}</small>
+      {a.avg !== null && (
+        <strong className="text-2xl font-semibold tracking-tight tabular-nums">
+          {fmt(a.avg)}{a.values.length > 1 && <span className="text-sm font-normal text-muted-foreground"> a day on average</span>}
+        </strong>
+      )}
+      <small className="text-xs text-muted-foreground">{facts.filter(Boolean).join(' · ')}</small>
+      {a.values.length > 1 && (
+        <div className="relative mt-2 flex h-16 items-end gap-1" role="img" aria-label={a.values.map((v) => `${shortDate(v.day)}: ${fmt(v.value)}`).join(', ')}>
+          {a.target !== null && <span className="absolute inset-x-0 border-t border-dashed border-muted-foreground/60" style={{ bottom: `${(a.target / top) * 100}%` }} aria-hidden />}
+          {a.values.map((v) => (
+            <span key={v.day} title={`${shortDate(v.day)}: ${fmt(v.value)}`} className="min-w-1 flex-1 rounded-t-[3px] bg-(--series-1)" style={{ height: `${Math.max(4, (v.value / top) * 100)}%` }} />
+          ))}
+        </div>
+      )}
+      {openLink('/health/trends', 'Open Trends')}
+    </div>
+  )
+}
+
+export default function Chat({ onClose, className }: { onClose?: () => void; className?: string }) {
   const money = useMoney()
   const firstName = useMe().data?.name.split(' ')[0]
   const categories = useCategories()
@@ -140,12 +267,13 @@ export default function Chat() {
 
   const send = useMutation({
     mutationFn: ({ message, voice = false }: { message: string; voice?: boolean }) =>
-      api<ChatMessage[]>('/assistant/chat', { method: 'POST', body: { message, voice, today: today() } }),
+      api<ChatMessage[]>('/assistant/chat', { method: 'POST', body: { message, voice, today: today(), now: nowHHMM() } }),
     onMutate: () => setFailed(null),
     onSuccess: (turn) => {
       queryClient.setQueryData<Item[]>(['chat'], (old = []) => [...old, ...stamp(turn)])
       if (turn.some((m) => m.logged.length)) refreshExpenseData()
       if (turn.some((m) => m.ious.length)) refreshIous()
+      if (turn.some((m) => m.health)) refreshHealth()
     },
     onError: (e, { message }) => setFailed({ text: message, error: e.message }),
   })
@@ -216,7 +344,7 @@ export default function Chat() {
   }
 
   return (
-    <Card className="chat min-h-80 flex-1 gap-0 overflow-hidden py-0" aria-label="Assistant" role="region">
+    <Card className={cn('chat min-h-80 flex-1 gap-0 overflow-hidden py-0', className)} aria-label="Assistant" role="region">
       <header className="flex items-center gap-3 px-4 py-3.5">
         <span className="relative flex-none">
           <Orb className="size-11" />
@@ -224,7 +352,7 @@ export default function Chat() {
         </span>
         <div className="min-w-0 flex-1">
           <h2 className="font-semibold tracking-tight">Ask Mirrorly</h2>
-          <p className="text-sm text-muted-foreground">Your money assistant · log or ask</p>
+          <p className="text-sm text-muted-foreground">Money, food &amp; sleep · log or ask</p>
         </div>
         {msgs.length > 0 && (
           <Button
@@ -232,6 +360,11 @@ export default function Chat() {
             onClick={() => confirm('Clear the whole conversation? Logged expenses stay.') && clear.mutate()}
           >
             <RotateCcw aria-hidden />
+          </Button>
+        )}
+        {onClose && (
+          <Button variant="ghost" size="icon" className="text-muted-foreground" aria-label="Close assistant" title="Close" onClick={onClose}>
+            <X aria-hidden />
           </Button>
         )}
       </header>
@@ -249,7 +382,7 @@ export default function Chat() {
             <Orb className="mb-1 size-16" />
             <div>
               <p className="font-semibold tracking-tight">Hi {firstName}, I'm Mirrorly</p>
-              <p className="text-sm text-muted-foreground">Tell me what you spent, or ask about it. Try:</p>
+              <p className="text-sm text-muted-foreground">Tell me what you spent, ate or slept, or ask about your spending. Try:</p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((s) => (
@@ -299,6 +432,8 @@ export default function Chat() {
             )}
             {m.answer && <AnswerCard a={m.answer} catById={catById} money={money} />}
             {m.ious.length > 0 && <IouCards ious={m.ious} money={money} />}
+            {m.health && <HealthCard h={m.health} />}
+            {m.health_answer && <HealthAnswerCard a={m.health_answer} />}
           </div>
         ))}
 
